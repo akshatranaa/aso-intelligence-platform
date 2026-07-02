@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: aso-intelligence-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ASO_API_KEY
+        sync: false
+      - key: ASO_ALLOWED_ORIGINS
+        sync: false
