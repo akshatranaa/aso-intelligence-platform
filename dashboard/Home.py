@@ -1,0 +1,79 @@
+"""ASO Intelligence Platform — Home page and app selector."""
+
+import streamlit as st
+from utils import api_get, api_post
+
+st.set_page_config(
+    page_title="ASO Intelligence Platform",
+    page_icon="📱",
+    layout="wide",
+)
+
+st.title("📱 ASO Intelligence Platform")
+st.caption("App Store Optimization powered by AI")
+st.divider()
+
+# Initialise session state
+if "app_id" not in st.session_state:
+    st.session_state.app_id = None
+if "app_name" not in st.session_state:
+    st.session_state.app_name = None
+
+# ── Two columns: collect new app | load existing app ──────────────────────────
+left, right = st.columns(2)
+
+with left:
+    st.subheader("🔍 Collect New App")
+    st.caption("Search the App Store and run the full analysis pipeline.")
+    app_name_input = st.text_input("App name", placeholder="e.g. Spotify")
+    use_llm = st.checkbox("Use LLM during analysis (costs API credits)", value=False)
+
+    if st.button("Collect ▶", type="primary", use_container_width=True):
+        if not app_name_input.strip():
+            st.warning("Please enter an app name.")
+        else:
+            with st.spinner(f"Collecting data for '{app_name_input}'... this takes a few minutes"):
+                suffix = "?use_llm=true" if use_llm else "?use_llm=false"
+                result = api_post(f"/collect/{app_name_input.strip()}{suffix}")
+            if result:
+                st.session_state.app_id   = result["app_id"]
+                st.session_state.app_name = result["app_name"]
+                st.success(f"✅ Collection complete for **{result['app_name']}**")
+                st.json({
+                    "App ID":         result["app_id"],
+                    "Reviews saved":  result["reviews_saved"],
+                    "Keywords found": result["keywords_found"],
+                    "Gaps found":     result["gaps_found"],
+                })
+
+with right:
+    st.subheader("📂 Load Existing App")
+    st.caption("View analysis for an app already in the database.")
+    app_id_input = st.text_input("App ID", placeholder="e.g. 324684580")
+
+    if st.button("Load ▶", use_container_width=True):
+        if not app_id_input.strip().isdigit():
+            st.warning("Please enter a valid numeric App ID.")
+        else:
+            app_data = api_get(f"/app/{app_id_input.strip()}")
+            if app_data:
+                st.session_state.app_id   = app_data["app_id"]
+                st.session_state.app_name = app_data["name"]
+                st.success(f"✅ Loaded **{app_data['name']}**")
+
+st.divider()
+
+# ── Currently loaded app status ───────────────────────────────────────────────
+if st.session_state.app_id:
+    app_data = api_get(f"/app/{st.session_state.app_id}")
+    if app_data:
+        st.subheader(f"Currently viewing: {app_data['name']}")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("App ID",       app_data["app_id"])
+        c2.metric("Avg Rating",   f"{app_data.get('avg_rating', 'N/A')} ⭐")
+        c3.metric("Rating Count", f"{app_data.get('rating_count', 0):,}")
+        c4.metric("Category",     app_data.get("category", "N/A"))
+
+        st.info("Use the sidebar to navigate to Sentiment, Keywords, Rankings, Competitors, and Recommendations.")
+else:
+    st.info("Enter an app name above to collect data, or enter an App ID to load existing data.")

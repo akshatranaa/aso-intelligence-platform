@@ -1,0 +1,19 @@
+# Secrets — never commit
+.env
+*.pem
+
+# Database — local data, not source code
+aso_data.db
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
