@@ -1,25 +1,29 @@
 from __future__ import annotations
 
-import sqlite3
 import logging
+import os
 from contextlib import contextmanager
 from datetime import datetime
+
+import psycopg2
+import psycopg2.extras
 
 import config
 
 logger = logging.getLogger(__name__)
 
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
 
 @contextmanager
 def get_connection():
     """
-    Yield a SQLite connection with auto-commit on success and rollback on error.
+    Yield a Postgres connection with auto-commit on success and rollback on error.
 
-    Enforces foreign key constraints and returns rows as dict-like objects.
+    Returns rows as dict-like objects via RealDictCursor. Foreign keys are
+    always enforced by Postgres, no pragma needed.
     """
-    conn = sqlite3.connect(config.DATABASE_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
     try:
         yield conn
         conn.commit()
@@ -37,7 +41,8 @@ def create_tables() -> None:
     Safe to call multiple times — uses CREATE TABLE IF NOT EXISTS throughout.
     """
     with get_connection() as conn:
-        conn.execute("""
+        cursor = conn.cursor()
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS apps (
                 app_id              INTEGER PRIMARY KEY,
                 name                TEXT NOT NULL,
@@ -58,9 +63,9 @@ def create_tables() -> None:
                 collected_at        TEXT NOT NULL
             )
         """)
-        conn.execute("""
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS reviews (
-                review_id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                review_id           SERIAL PRIMARY KEY,
                 app_id              INTEGER NOT NULL,
                 review_text         TEXT,
                 rating              INTEGER,
@@ -74,9 +79,9 @@ def create_tables() -> None:
                 UNIQUE (app_id, review_date, author)
             )
         """)
-        conn.execute("""
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS keywords (
-                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                id                  SERIAL PRIMARY KEY,
                 app_id              INTEGER NOT NULL,
                 keyword             TEXT NOT NULL,
                 proxy_volume        REAL,
@@ -96,13 +101,13 @@ def create_tables() -> None:
                 FOREIGN KEY (app_id) REFERENCES apps(app_id)
             )
         """)
-        conn.execute("""
+        cursor.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS idx_keywords_app_keyword
             ON keywords (app_id, keyword)
         """)
-        conn.execute("""
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS rankings (
-                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                id                  SERIAL PRIMARY KEY,
                 app_id              INTEGER NOT NULL,
                 keyword             TEXT NOT NULL,
                 rank                INTEGER,
@@ -112,7 +117,7 @@ def create_tables() -> None:
                 FOREIGN KEY (app_id) REFERENCES apps(app_id)
             )
         """)
-        conn.execute("""
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS search_ads_campaigns (
                 campaign_id         TEXT PRIMARY KEY,
                 app_id              INTEGER NOT NULL,
@@ -127,9 +132,9 @@ def create_tables() -> None:
                 FOREIGN KEY (app_id) REFERENCES apps(app_id)
             )
         """)
-        conn.execute("""
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS search_ads_keyword_data (
-                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                id                  SERIAL PRIMARY KEY,
                 campaign_id         TEXT NOT NULL,
                 keyword             TEXT NOT NULL,
                 date                TEXT NOT NULL,
@@ -143,7 +148,8 @@ def create_tables() -> None:
                 conversion_rate     REAL,
                 impression_share    REAL,
                 is_search_match     INTEGER DEFAULT 0,
-                FOREIGN KEY (campaign_id) REFERENCES search_ads_campaigns(campaign_id)
+                FOREIGN KEY (campaign_id) REFERENCES search_ads_campaigns(campaign_id),
+                UNIQUE (campaign_id, keyword, date)
             )
         """)
     logger.info("All 6 database tables created (or already exist)")
@@ -161,14 +167,16 @@ def save_app(app_dict: dict) -> bool:
     """
     collected_at = app_dict.get("collected_at", datetime.now().isoformat())
     with get_connection() as conn:
-        cursor = conn.execute(
+        cursor = conn.cursor()
+        cursor.execute(
             """
-            INSERT OR IGNORE INTO apps (
+            INSERT INTO apps (
                 app_id, name, description, release_notes, category,
                 avg_rating, rating_count, price, seller_name, bundle_id,
                 min_os_version, version, country, is_target_app,
                 competitor_tier, competitor_score, collected_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (app_id) DO NOTHING
             """,
             (
                 app_dict["app_id"],
@@ -210,14 +218,16 @@ def save_reviews(reviews_list: list[dict]) -> int:
     """
     inserted_count = 0
     with get_connection() as conn:
+        cursor = conn.cursor()
         for review in reviews_list:
-            cursor = conn.execute(
+            cursor.execute(
                 """
-                INSERT OR IGNORE INTO reviews (
+                INSERT INTO reviews (
                     app_id, review_text, rating, review_date,
                     author, sentiment_score, sentiment_label,
                     theme_cluster, collected_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (app_id, review_date, author) DO NOTHING
                 """,
                 (
                     review["app_id"],
@@ -248,10 +258,11 @@ def save_ranking(app_id: int, keyword: str, rank: int, date: str) -> None:
     yesterday_rank = get_yesterday_rank(app_id, keyword)
     rank_delta = (rank - yesterday_rank) if yesterday_rank is not None else None
     with get_connection() as conn:
-        conn.execute(
+        cursor = conn.cursor()
+        cursor.execute(
             """
             INSERT INTO rankings (app_id, keyword, rank, date, rank_delta)
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s)
             """,
             (app_id, keyword, rank, date, rank_delta),
         )
@@ -271,9 +282,9 @@ def get_app(app_id: int) -> dict | None:
         Dict of app fields, or None if not found.
     """
     with get_connection() as conn:
-        row = conn.execute(
-            "SELECT * FROM apps WHERE app_id = ?", (app_id,)
-        ).fetchone()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM apps WHERE app_id = %s", (app_id,))
+        row = cursor.fetchone()
     return dict(row) if row else None
 
 
@@ -285,7 +296,9 @@ def get_all_apps() -> list[dict]:
         List of dicts, one per app row.
     """
     with get_connection() as conn:
-        rows = conn.execute("SELECT * FROM apps").fetchall()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM apps")
+        rows = cursor.fetchall()
     return [dict(row) for row in rows]
 
 
@@ -300,9 +313,9 @@ def get_reviews(app_id: int) -> list[dict]:
         List of review dicts.
     """
     with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM reviews WHERE app_id = ?", (app_id,)
-        ).fetchall()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM reviews WHERE app_id = %s", (app_id,))
+        rows = cursor.fetchall()
     return [dict(row) for row in rows]
 
 
@@ -317,10 +330,12 @@ def get_all_rankings(app_id: int) -> list[dict]:
         List of ranking dicts ordered oldest-first.
     """
     with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM rankings WHERE app_id = ? ORDER BY date ASC",
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM rankings WHERE app_id = %s ORDER BY date ASC",
             (app_id,),
-        ).fetchall()
+        )
+        rows = cursor.fetchall()
     return [dict(row) for row in rows]
 
 
@@ -336,14 +351,16 @@ def get_rankings(app_id: int, keyword: str) -> list[dict]:
         List of ranking dicts ordered oldest-first.
     """
     with get_connection() as conn:
-        rows = conn.execute(
+        cursor = conn.cursor()
+        cursor.execute(
             """
             SELECT * FROM rankings
-            WHERE app_id = ? AND keyword = ?
+            WHERE app_id = %s AND keyword = %s
             ORDER BY date ASC
             """,
             (app_id, keyword),
-        ).fetchall()
+        )
+        rows = cursor.fetchall()
     return [dict(row) for row in rows]
 
 
@@ -358,9 +375,9 @@ def app_exists(app_id: int) -> bool:
         True if the app exists, False otherwise.
     """
     with get_connection() as conn:
-        row = conn.execute(
-            "SELECT 1 FROM apps WHERE app_id = ?", (app_id,)
-        ).fetchone()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM apps WHERE app_id = %s", (app_id,))
+        row = cursor.fetchone()
     return row is not None
 
 
@@ -376,15 +393,17 @@ def get_yesterday_rank(app_id: int, keyword: str) -> int | None:
         Most recent rank value, or None if no previous record exists.
     """
     with get_connection() as conn:
-        row = conn.execute(
+        cursor = conn.cursor()
+        cursor.execute(
             """
             SELECT rank FROM rankings
-            WHERE app_id = ? AND keyword = ?
+            WHERE app_id = %s AND keyword = %s
             ORDER BY date DESC
             LIMIT 1
             """,
             (app_id, keyword),
-        ).fetchone()
+        )
+        row = cursor.fetchone()
     return row["rank"] if row else None
 
 
@@ -399,9 +418,9 @@ def get_keywords(app_id: int) -> list[dict]:
         List of dicts, one per keyword row.
     """
     with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM keywords WHERE app_id = ?", (app_id,)
-        ).fetchall()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM keywords WHERE app_id = %s", (app_id,))
+        rows = cursor.fetchall()
     return [dict(row) for row in rows]
 
 
@@ -413,21 +432,36 @@ def save_keyword(keyword_dict: dict) -> None:
         keyword_dict: Dict whose keys match the keywords table columns.
     """
     with get_connection() as conn:
-        conn.execute(
+        cursor = conn.cursor()
+        cursor.execute(
             """
-            INSERT OR REPLACE INTO keywords (
+            INSERT INTO keywords (
                 app_id, keyword, proxy_volume, proxy_difficulty,
                 proxy_opportunity, confirmed_volume, confirmed_conversion,
                 confirmed_cpi, revised_opportunity, keyword_bucket,
                 is_hidden_gem, is_gap_keyword, gap_competitor,
                 source, created_at, updated_at
             ) VALUES (
-                :app_id, :keyword, :proxy_volume, :proxy_difficulty,
-                :proxy_opportunity, :confirmed_volume, :confirmed_conversion,
-                :confirmed_cpi, :revised_opportunity, :keyword_bucket,
-                :is_hidden_gem, :is_gap_keyword, :gap_competitor,
-                :source, :created_at, :updated_at
+                %(app_id)s, %(keyword)s, %(proxy_volume)s, %(proxy_difficulty)s,
+                %(proxy_opportunity)s, %(confirmed_volume)s, %(confirmed_conversion)s,
+                %(confirmed_cpi)s, %(revised_opportunity)s, %(keyword_bucket)s,
+                %(is_hidden_gem)s, %(is_gap_keyword)s, %(gap_competitor)s,
+                %(source)s, %(created_at)s, %(updated_at)s
             )
+            ON CONFLICT (app_id, keyword) DO UPDATE SET
+                proxy_volume         = EXCLUDED.proxy_volume,
+                proxy_difficulty     = EXCLUDED.proxy_difficulty,
+                proxy_opportunity    = EXCLUDED.proxy_opportunity,
+                confirmed_volume     = EXCLUDED.confirmed_volume,
+                confirmed_conversion = EXCLUDED.confirmed_conversion,
+                confirmed_cpi        = EXCLUDED.confirmed_cpi,
+                revised_opportunity  = EXCLUDED.revised_opportunity,
+                keyword_bucket       = EXCLUDED.keyword_bucket,
+                is_hidden_gem        = EXCLUDED.is_hidden_gem,
+                is_gap_keyword       = EXCLUDED.is_gap_keyword,
+                gap_competitor       = EXCLUDED.gap_competitor,
+                source               = EXCLUDED.source,
+                updated_at           = EXCLUDED.updated_at
             """,
             keyword_dict,
         )
@@ -444,8 +478,9 @@ def update_sentiment(review_id: int, score: float, label: str) -> None:
         label:     One of "positive", "negative", "neutral".
     """
     with get_connection() as conn:
-        conn.execute(
-            "UPDATE reviews SET sentiment_score = ?, sentiment_label = ? WHERE review_id = ?",
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE reviews SET sentiment_score = %s, sentiment_label = %s WHERE review_id = %s",
             (score, label, review_id),
         )
 
@@ -458,9 +493,9 @@ def get_competitor_apps() -> list[dict]:
         List of dicts for every row where is_target_app = 0.
     """
     with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM apps WHERE is_target_app = 0"
-        ).fetchall()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM apps WHERE is_target_app = 0")
+        rows = cursor.fetchall()
     return [dict(row) for row in rows]
 
 
@@ -472,9 +507,9 @@ def get_target_app() -> dict | None:
         Dict for the target app row, or None if not set yet.
     """
     with get_connection() as conn:
-        row = conn.execute(
-            "SELECT * FROM apps WHERE is_target_app = 1 LIMIT 1"
-        ).fetchone()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM apps WHERE is_target_app = 1 LIMIT 1")
+        row = cursor.fetchone()
     return dict(row) if row else None
 
 
@@ -486,17 +521,27 @@ def save_campaign(campaign_dict: dict) -> None:
         campaign_dict: Dict whose keys match the search_ads_campaigns columns.
     """
     with get_connection() as conn:
-        conn.execute(
+        cursor = conn.cursor()
+        cursor.execute(
             """
-            INSERT OR REPLACE INTO search_ads_campaigns (
+            INSERT INTO search_ads_campaigns (
                 campaign_id, app_id, name, bucket_type,
                 start_date, end_date, total_budget,
                 daily_budget, status, created_at
             ) VALUES (
-                :campaign_id, :app_id, :name, :bucket_type,
-                :start_date, :end_date, :total_budget,
-                :daily_budget, :status, :created_at
+                %(campaign_id)s, %(app_id)s, %(name)s, %(bucket_type)s,
+                %(start_date)s, %(end_date)s, %(total_budget)s,
+                %(daily_budget)s, %(status)s, %(created_at)s
             )
+            ON CONFLICT (campaign_id) DO UPDATE SET
+                app_id       = EXCLUDED.app_id,
+                name         = EXCLUDED.name,
+                bucket_type  = EXCLUDED.bucket_type,
+                start_date   = EXCLUDED.start_date,
+                end_date     = EXCLUDED.end_date,
+                total_budget = EXCLUDED.total_budget,
+                daily_budget = EXCLUDED.daily_budget,
+                status       = EXCLUDED.status
             """,
             campaign_dict,
         )
@@ -511,19 +556,31 @@ def save_keyword_data(kw_dict: dict) -> None:
         kw_dict: Dict whose keys match the search_ads_keyword_data columns.
     """
     with get_connection() as conn:
-        conn.execute(
+        cursor = conn.cursor()
+        cursor.execute(
             """
-            INSERT OR REPLACE INTO search_ads_keyword_data (
+            INSERT INTO search_ads_keyword_data (
                 campaign_id, keyword, date, impressions, taps,
                 installs, spend, avg_cpt, avg_cpi,
                 tap_through_rate, conversion_rate,
                 impression_share, is_search_match
             ) VALUES (
-                :campaign_id, :keyword, :date, :impressions, :taps,
-                :installs, :spend, :avg_cpt, :avg_cpi,
-                :tap_through_rate, :conversion_rate,
-                :impression_share, :is_search_match
+                %(campaign_id)s, %(keyword)s, %(date)s, %(impressions)s, %(taps)s,
+                %(installs)s, %(spend)s, %(avg_cpt)s, %(avg_cpi)s,
+                %(tap_through_rate)s, %(conversion_rate)s,
+                %(impression_share)s, %(is_search_match)s
             )
+            ON CONFLICT (campaign_id, keyword, date) DO UPDATE SET
+                impressions       = EXCLUDED.impressions,
+                taps              = EXCLUDED.taps,
+                installs          = EXCLUDED.installs,
+                spend             = EXCLUDED.spend,
+                avg_cpt           = EXCLUDED.avg_cpt,
+                avg_cpi           = EXCLUDED.avg_cpi,
+                tap_through_rate  = EXCLUDED.tap_through_rate,
+                conversion_rate   = EXCLUDED.conversion_rate,
+                impression_share  = EXCLUDED.impression_share,
+                is_search_match   = EXCLUDED.is_search_match
             """,
             kw_dict,
         )
@@ -541,10 +598,12 @@ def get_campaigns(app_id: int) -> list[dict]:
         List of campaign dicts.
     """
     with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM search_ads_campaigns WHERE app_id = ?",
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM search_ads_campaigns WHERE app_id = %s",
             (app_id,),
-        ).fetchall()
+        )
+        rows = cursor.fetchall()
     return [dict(row) for row in rows]
 
 
@@ -559,8 +618,10 @@ def get_keyword_data(campaign_id: str) -> list[dict]:
         List of keyword data dicts.
     """
     with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM search_ads_keyword_data WHERE campaign_id = ?",
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM search_ads_keyword_data WHERE campaign_id = %s",
             (campaign_id,),
-        ).fetchall()
+        )
+        rows = cursor.fetchall()
     return [dict(row) for row in rows]

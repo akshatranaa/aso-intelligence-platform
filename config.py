@@ -12,8 +12,8 @@ RANKING_SEARCH_LIMIT   = 200
 # Rate limiting
 RATE_LIMIT_SECONDS = 1
 
-# Database
-DATABASE_PATH = "aso_data.db"
+# Database — connection string comes from the DATABASE_URL environment variable
+# (see database.py). Postgres-hosted (e.g. Neon), not a local file.
 
 # Competitor scoring weights — must sum to 1.0
 COMPETITOR_WEIGHTS = {
