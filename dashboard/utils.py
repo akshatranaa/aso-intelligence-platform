@@ -7,8 +7,30 @@ import os
 import requests
 import streamlit as st
 
-API_BASE = os.environ.get("ASO_API_BASE", "http://localhost:8000")
-_API_KEY = os.environ.get("ASO_API_KEY")
+def _get_config(key: str, default: str | None = None) -> str | None:
+    """
+    Read a config value from Streamlit secrets first, falling back to env vars.
+
+    st.secrets is the guaranteed mechanism on Streamlit Community Cloud;
+    os.environ covers local dev via a plain .env file.
+
+    Args:
+        key:     Config key to look up.
+        default: Value to return if not found anywhere.
+
+    Returns:
+        The resolved config value, or default.
+    """
+    try:
+        if key in st.secrets:
+            return st.secrets[key]
+    except Exception:
+        pass
+    return os.environ.get(key, default)
+
+
+API_BASE = _get_config("ASO_API_BASE", "http://localhost:8000")
+_API_KEY = _get_config("ASO_API_KEY")
 _API_HEADERS = {"X-API-Key": _API_KEY} if _API_KEY else {}
 
 
