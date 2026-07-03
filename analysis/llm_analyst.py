@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 
 import httpx
 from dotenv import load_dotenv
@@ -15,10 +16,18 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+# Provider-side transient statuses worth retrying (free models get these a lot).
+_RETRYABLE_STATUS = {429, 500, 502, 503, 529}
+
 
 def _call_llm(prompt: str, expect_json: bool = False) -> dict | list | str | None:
     """
     Central function that makes every LLM API call, via OpenRouter.
+
+    Retries up to config.LLM_MAX_RETRIES times on transient errors
+    (rate limits, upstream unavailability, timeouts) with exponential
+    backoff. Non-transient failures (bad key, bad request, JSON parse)
+    are not retried.
 
     Args:
         prompt:      Full prompt string to send.
@@ -26,27 +35,56 @@ def _call_llm(prompt: str, expect_json: bool = False) -> dict | list | str | Non
 
     Returns:
         Parsed JSON dict/list if expect_json=True, raw string otherwise,
-        or None if the API call or JSON parse fails.
+        or None if the call ultimately fails or the JSON parse fails.
     """
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         logger.error("OPENROUTER_API_KEY not set — skipping LLM call")
         return None
+
+    text = None
+    for attempt in range(config.LLM_MAX_RETRIES + 1):
+        try:
+            response = httpx.post(
+                config.OPENROUTER_URL,
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": config.LLM_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": config.LLM_MAX_TOKENS,
+                },
+                timeout=60.0,
+            )
+            if response.status_code in _RETRYABLE_STATUS and attempt < config.LLM_MAX_RETRIES:
+                wait = 2 ** attempt
+                logger.warning(
+                    f"LLM {response.status_code} "
+                    f"(attempt {attempt + 1}/{config.LLM_MAX_RETRIES + 1}), retrying in {wait}s"
+                )
+                time.sleep(wait)
+                continue
+            response.raise_for_status()
+            text = response.json()["choices"][0]["message"]["content"]
+            break
+        except httpx.RequestError as e:
+            # Network/timeout error — retry if attempts remain, else give up.
+            if attempt < config.LLM_MAX_RETRIES:
+                wait = 2 ** attempt
+                logger.warning(f"LLM network error (attempt {attempt + 1}), retrying in {wait}s: {e}")
+                time.sleep(wait)
+                continue
+            logger.error(f"LLM API call failed: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"LLM API call failed: {e}")
+            return None
+
+    if text is None:
+        return None
+
+    if not expect_json:
+        return text
     try:
-        response = httpx.post(
-            config.OPENROUTER_URL,
-            headers={"Authorization": f"Bearer {api_key}"},
-            json={
-                "model": config.LLM_MODEL,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": config.LLM_MAX_TOKENS,
-            },
-            timeout=60.0,
-        )
-        response.raise_for_status()
-        text = response.json()["choices"][0]["message"]["content"]
-        if not expect_json:
-            return text
         text = text.strip()
         if text.startswith("```"):
             text = text.split("```")[1]
@@ -54,7 +92,7 @@ def _call_llm(prompt: str, expect_json: bool = False) -> dict | list | str | Non
                 text = text[4:]
         return json.loads(text.strip())
     except Exception as e:
-        logger.error(f"LLM API call failed: {e}")
+        logger.error(f"LLM JSON parse failed: {e}")
         return None
 
 

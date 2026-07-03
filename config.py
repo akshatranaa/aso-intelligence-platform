@@ -59,6 +59,7 @@ LOG_FORMAT = "%(asctime)s — %(name)s — %(levelname)s — %(message)s"
 OPENROUTER_URL        = "https://openrouter.ai/api/v1/chat/completions"
 LLM_MODEL             = "google/gemma-4-31b-it:free"  # exact OpenRouter model slug
 LLM_MAX_TOKENS        = 1024
+LLM_MAX_RETRIES       = 2  # retries on transient errors (429/503/timeout)
 LLM_REVIEW_BATCH_SIZE = 20
 LLM_TOP_REVIEWS       = 50
 
