@@ -1,4 +1,4 @@
-"""Owns all Anthropic API calls for the ASO platform. No other module calls the API directly."""
+"""Owns all LLM API calls (via OpenRouter). No other module calls the API directly."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import json
 import logging
 import os
 
+import httpx
 from dotenv import load_dotenv
-import anthropic
 
 import config
 
@@ -15,12 +15,10 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-client = anthropic.Anthropic()
-
 
 def _call_llm(prompt: str, expect_json: bool = False) -> dict | list | str | None:
     """
-    Central function that makes every Anthropic API call.
+    Central function that makes every LLM API call, via OpenRouter.
 
     Args:
         prompt:      Full prompt string to send.
@@ -30,13 +28,23 @@ def _call_llm(prompt: str, expect_json: bool = False) -> dict | list | str | Non
         Parsed JSON dict/list if expect_json=True, raw string otherwise,
         or None if the API call or JSON parse fails.
     """
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        logger.error("OPENROUTER_API_KEY not set — skipping LLM call")
+        return None
     try:
-        response = client.messages.create(
-            model=config.LLM_MODEL,
-            max_tokens=config.LLM_MAX_TOKENS,
-            messages=[{"role": "user", "content": prompt}],
+        response = httpx.post(
+            config.OPENROUTER_URL,
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": config.LLM_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": config.LLM_MAX_TOKENS,
+            },
+            timeout=60.0,
         )
-        text = response.content[0].text
+        response.raise_for_status()
+        text = response.json()["choices"][0]["message"]["content"]
         if not expect_json:
             return text
         text = text.strip()

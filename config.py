@@ -5,7 +5,7 @@ ITUNES_REVIEWS_URL      = "https://itunes.apple.com/{country}/rss/customerreview
 ITUNES_AUTOCOMPLETE_URL = "https://search.itunes.apple.com/WebObjects/MZSearchHints.woa/wa/hints"
 
 # Defaults
-DEFAULT_COUNTRY        = "us"
+DEFAULT_COUNTRY        = "india"
 DEFAULT_LIMIT          = 200
 RANKING_SEARCH_LIMIT   = 200
 
@@ -55,8 +55,9 @@ RANK_VELOCITY_DAYS   = 7
 LOG_LEVEL  = "INFO"
 LOG_FORMAT = "%(asctime)s — %(name)s — %(levelname)s — %(message)s"
 
-# LLM settings
-LLM_MODEL             = "claude-sonnet-4-6"
+# LLM settings — served via OpenRouter (OpenAI-compatible REST API)
+OPENROUTER_URL        = "https://openrouter.ai/api/v1/chat/completions"
+LLM_MODEL             = "google/gemma-4-31b-it:free"  # exact OpenRouter model slug
 LLM_MAX_TOKENS        = 1024
 LLM_REVIEW_BATCH_SIZE = 20
 LLM_TOP_REVIEWS       = 50
