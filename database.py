@@ -152,7 +152,20 @@ def create_tables() -> None:
                 UNIQUE (campaign_id, keyword, date)
             )
         """)
-    logger.info("All 6 database tables created (or already exist)")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS competitors (
+                id                  SERIAL PRIMARY KEY,
+                target_app_id       BIGINT NOT NULL,
+                competitor_app_id   BIGINT NOT NULL,
+                tier                TEXT,
+                score               REAL,
+                discovered_at       TEXT NOT NULL,
+                FOREIGN KEY (target_app_id) REFERENCES apps(app_id),
+                FOREIGN KEY (competitor_app_id) REFERENCES apps(app_id),
+                UNIQUE (target_app_id, competitor_app_id)
+            )
+        """)
+    logger.info("All database tables created (or already exist)")
 
 
 def save_app(app_dict: dict) -> bool:
@@ -583,6 +596,70 @@ def get_competitor_apps() -> list[dict]:
         cursor.execute("SELECT * FROM apps WHERE is_target_app = 0")
         rows = cursor.fetchall()
     return [dict(row) for row in rows]
+
+
+def save_competitor(
+    target_app_id: int, competitor_app_id: int, tier: str, score: float
+) -> None:
+    """
+    Record (or update) that one app is a scored competitor of a target app.
+
+    Args:
+        target_app_id:     The app the competitor was discovered for.
+        competitor_app_id: The competing app.
+        tier:              "tier1" or "tier2".
+        score:             Competitor score in [0.0, 1.0].
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO competitors (
+                target_app_id, competitor_app_id, tier, score, discovered_at
+            ) VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (target_app_id, competitor_app_id) DO UPDATE SET
+                tier          = EXCLUDED.tier,
+                score         = EXCLUDED.score,
+                discovered_at = EXCLUDED.discovered_at
+            """,
+            (target_app_id, competitor_app_id, tier, score, datetime.now().isoformat()),
+        )
+
+
+def get_competitors(target_app_id: int) -> list[dict]:
+    """
+    Fetch competitor apps discovered specifically for one target app.
+
+    Joins the competitors relationship table with app metadata, exposing
+    each competitor's tier/score for THIS target as competitor_tier /
+    competitor_score (overriding any stale global columns on the app row).
+
+    Args:
+        target_app_id: The app to fetch competitors for.
+
+    Returns:
+        List of competitor app dicts, sorted by score descending.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT a.*, c.tier, c.score
+            FROM competitors c
+            JOIN apps a ON a.app_id = c.competitor_app_id
+            WHERE c.target_app_id = %s
+            ORDER BY c.score DESC
+            """,
+            (target_app_id,),
+        )
+        rows = cursor.fetchall()
+    result = []
+    for row in rows:
+        d = dict(row)
+        d["competitor_tier"]  = d.pop("tier")
+        d["competitor_score"] = d.pop("score")
+        result.append(d)
+    return result
 
 
 def get_target_app() -> dict | None:

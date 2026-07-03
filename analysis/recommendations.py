@@ -156,7 +156,7 @@ def _get_competitor_recommendations(app_id: int, use_llm: bool = True) -> dict:
         Dict with competitor analysis, missing keywords, and recommendation.
     """
     target_app  = database.get_app(app_id)
-    competitors = database.get_competitor_apps()
+    competitors = database.get_competitors(app_id)
     tier1       = [c for c in competitors if c.get("competitor_tier") == "tier1"]
 
     if not tier1:

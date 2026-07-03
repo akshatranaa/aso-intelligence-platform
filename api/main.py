@@ -241,7 +241,7 @@ def get_competitors(app_id: int) -> dict:
     """
     if not database.get_app(app_id):
         raise HTTPException(status_code=404, detail=f"App {app_id} not found")
-    all_competitors = database.get_competitor_apps()
+    all_competitors = database.get_competitors(app_id)
     tier1 = [c for c in all_competitors if c.get("competitor_tier") == "tier1"]
     tier2 = [c for c in all_competitors if c.get("competitor_tier") == "tier2"]
     return {

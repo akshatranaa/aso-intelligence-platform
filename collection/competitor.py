@@ -164,6 +164,7 @@ def discover_competitors(
             app_data["competitor_score"] = score
             app_data["competitor_tier"] = tier
             database.save_app(app_data)
+            database.save_competitor(target_app_id, app_data["app_id"], tier, score)
             competitors.append(_build_entry(app_data, score, tier))
             if depth < max_depth:
                 _enqueue_neighbours(current_id, target_keywords, depth, queue)

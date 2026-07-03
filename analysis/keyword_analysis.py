@@ -62,8 +62,7 @@ def run_keyword_analysis(app_id: int, use_llm: bool = True) -> dict:
         Dict with top_keywords, gaps, and narrative keys.
     """
     target_app = database.get_app(app_id)
-    all_apps   = database.get_all_apps()
-    candidates = extract_keywords(target_app, all_apps, use_llm=use_llm)
+    candidates = extract_keywords(target_app, use_llm=use_llm)
     scored     = score_keywords(candidates, app_id)
     gaps       = find_keyword_gaps(app_id)
     _save_keywords(scored + gaps, app_id)
@@ -74,7 +73,7 @@ def run_keyword_analysis(app_id: int, use_llm: bool = True) -> dict:
     return {"top_keywords": top_k, "gaps": gaps, "narrative": narrative}
 
 
-def extract_keywords(target_app: dict, all_apps: list[dict], use_llm: bool = False) -> list[str]:
+def extract_keywords(target_app: dict, use_llm: bool = False) -> list[str]:
     """
     Discover candidate keywords using Apple's own autocomplete API.
     All candidates are real terms users actually search for.
@@ -92,8 +91,9 @@ def extract_keywords(target_app: dict, all_apps: list[dict], use_llm: bool = Fal
         suggestions = scraper.fetch_keyword_suggestions(f"{base} {letter}")
         candidates.update(suggestions)
 
-    # Source 3: competitor name expansion (tier1 only)
-    tier1 = [a for a in all_apps if a.get("competitor_tier") == "tier1"]
+    # Source 3: competitor name expansion (tier1 competitors of THIS app only)
+    competitors = database.get_competitors(target_app["app_id"])
+    tier1 = [c for c in competitors if c.get("competitor_tier") == "tier1"]
     for comp in tier1[:5]:
         base_name = comp["name"].lower().split()[0].strip(string.punctuation)
         suggestions = scraper.fetch_keyword_suggestions(base_name)
@@ -247,7 +247,7 @@ def find_keyword_gaps(app_id: int) -> list[dict]:
         row["keyword"] for row in database.get_all_rankings(app_id)
     }
     competitor_ids = [
-        app["app_id"] for app in database.get_all_apps() if not app["is_target_app"]
+        comp["app_id"] for comp in database.get_competitors(app_id)
     ]
 
     gap_map: dict[str, dict] = {}
