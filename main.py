@@ -38,14 +38,9 @@ def main() -> None:
     target_app_id = app_data["app_id"]
     logger.info(f"Target app saved: {app_data['name']} ({target_app_id})")
 
-    # Step 5 — seed keywords
-    seed_keywords = [
-        "music player",
-        "offline music",
-        "podcast app",
-        "music streaming",
-        "audio player",
-    ]
+    # Step 5 — seed keywords derived from the target app itself
+    seed_keywords = keyword_analysis.derive_seed_keywords(app_data)
+    logger.info(f"Derived seed keywords: {seed_keywords}")
 
     # Step 6 — discover competitors
     logger.info("Discovering competitors...")

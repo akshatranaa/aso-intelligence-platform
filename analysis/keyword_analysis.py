@@ -15,6 +15,32 @@ from collection import scraper
 logger = logging.getLogger(__name__)
 
 
+def derive_seed_keywords(app_data: dict) -> list[str]:
+    """
+    Build seed search terms from a target app's own name and category.
+
+    Generalises the pipeline to any app (VPN, game, fitness, etc.) instead
+    of assuming music-specific seeds. Shared by competitor discovery, rank
+    tracking, and keyword discovery so there is a single source of truth.
+
+    Args:
+        app_data: App metadata dict with at least 'name' and 'category'.
+
+    Returns:
+        Deduplicated list of lowercase seed search terms.
+    """
+    name = app_data.get("name", "").split(":")[0].strip(string.punctuation).strip().lower()
+    category = (app_data.get("category") or "").strip().lower()
+
+    seeds = []
+    if name:
+        seeds.append(name)
+    if category:
+        seeds.append(category)
+        seeds.append(f"{category} app")
+    return [s for s in dict.fromkeys(seeds) if s]
+
+
 def run_keyword_analysis(app_id: int, use_llm: bool = True) -> dict:
     """
     Master function — run the full keyword pipeline for one app.
@@ -46,18 +72,10 @@ def extract_keywords(target_app: dict, all_apps: list[dict]) -> list[str]:
     """
     candidates = set()
 
-    # Source 1: autocomplete on seed terms
-    seed_terms = [
-        target_app["name"].lower(),
-        target_app.get("category", "").lower(),
-        "music player",
-        "music streaming",
-        "podcast app",
-    ]
-    for seed in seed_terms:
-        if seed:
-            suggestions = scraper.fetch_keyword_suggestions(seed)
-            candidates.update(suggestions)
+    # Source 1: autocomplete on seed terms derived from the target app itself
+    for seed in derive_seed_keywords(target_app):
+        suggestions = scraper.fetch_keyword_suggestions(seed)
+        candidates.update(suggestions)
 
     # Source 2: alphabet expansion on app name
     base = target_app["name"].lower().split()[0].strip(string.punctuation)

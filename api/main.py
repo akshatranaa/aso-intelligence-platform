@@ -48,14 +48,6 @@ def verify_api_key(x_api_key: Optional[str] = Header(default=None)) -> None:
     if _API_KEY and x_api_key != _API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
-_SEED_KEYWORDS = [
-    "music player",
-    "offline music",
-    "podcast app",
-    "music streaming",
-    "audio player",
-]
-
 # In-memory job store for the async /collect flow. Render's proxy kills any
 # single HTTP request after ~100s, but /collect legitimately takes several
 # minutes (strict 1 req/sec rate limiting on every Apple API call), so it
@@ -83,12 +75,13 @@ def _run_collection(job_id: str, app_name: str, use_llm: bool) -> None:
         app_data["is_target_app"] = 1
         database.save_app(app_data)
         app_id = app_data["app_id"]
+        seed_keywords = keyword_analysis.derive_seed_keywords(app_data)
         logger.info(f"Collecting data for {app_data['name']} ({app_id})")
 
-        competitor.discover_competitors(app_id, _SEED_KEYWORDS, max_depth=1)
+        competitor.discover_competitors(app_id, seed_keywords, max_depth=1)
 
         today = str(date.today())
-        for keyword in _SEED_KEYWORDS:
+        for keyword in seed_keywords:
             rank = scraper.fetch_keyword_ranking(keyword, app_id)
             if rank:
                 database.save_ranking(app_id, keyword, rank, today)
@@ -102,7 +95,7 @@ def _run_collection(job_id: str, app_name: str, use_llm: bool) -> None:
 
         sentiment_summary = sentiment.score_all_reviews(app_id, use_llm=use_llm)
         kw_result         = keyword_analysis.run_keyword_analysis(app_id, use_llm=use_llm)
-        rank_tracker.take_snapshot(app_id, _SEED_KEYWORDS)
+        rank_tracker.take_snapshot(app_id, seed_keywords)
         rank_tracker.compute_all_velocities(app_id)
 
         logger.info(f"Collection complete for {app_data['name']}")
