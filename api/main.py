@@ -75,7 +75,7 @@ def _run_collection(job_id: str, app_name: str, use_llm: bool) -> None:
         app_data["is_target_app"] = 1
         database.save_app(app_data)
         app_id = app_data["app_id"]
-        seed_keywords = keyword_analysis.derive_seed_keywords(app_data)
+        seed_keywords = keyword_analysis.derive_seed_keywords(app_data, use_llm=use_llm)
         logger.info(f"Collecting data for {app_data['name']} ({app_id})")
 
         competitor.discover_competitors(app_id, seed_keywords, max_depth=1)

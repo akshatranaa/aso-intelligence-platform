@@ -15,23 +15,32 @@ from collection import scraper
 logger = logging.getLogger(__name__)
 
 
-def derive_seed_keywords(app_data: dict) -> list[str]:
+def derive_seed_keywords(app_data: dict, use_llm: bool = False) -> list[str]:
     """
-    Build seed search terms from a target app's own name and category.
+    Build seed search terms for a target app.
 
-    Generalises the pipeline to any app (VPN, game, fitness, etc.) instead
-    of assuming music-specific seeds. Shared by competitor discovery, rank
-    tracking, and keyword discovery so there is a single source of truth.
+    With use_llm=True, asks the LLM for targeted, function-based seeds
+    (e.g. "vpn", "secure vpn" for a VPN app) and combines them with the
+    app name. Falls back to name + category when the LLM is off or fails.
+    Shared by competitor discovery, rank tracking, and keyword discovery.
 
     Args:
         app_data: App metadata dict with at least 'name' and 'category'.
+        use_llm:  Whether to generate seeds via the LLM.
 
     Returns:
         Deduplicated list of lowercase seed search terms.
     """
     name = app_data.get("name", "").split(":")[0].strip(string.punctuation).strip().lower()
-    category = (app_data.get("category") or "").strip().lower()
 
+    if use_llm:
+        llm_seeds = llm_analyst.generate_seed_keywords(app_data, use_llm=True)
+        if llm_seeds:
+            seeds = ([name] if name else []) + llm_seeds
+            return [s for s in dict.fromkeys(seeds) if s]
+
+    # Fallback: name + category-based seeds
+    category = (app_data.get("category") or "").strip().lower()
     seeds = []
     if name:
         seeds.append(name)
@@ -54,7 +63,7 @@ def run_keyword_analysis(app_id: int, use_llm: bool = True) -> dict:
     """
     target_app = database.get_app(app_id)
     all_apps   = database.get_all_apps()
-    candidates = extract_keywords(target_app, all_apps)
+    candidates = extract_keywords(target_app, all_apps, use_llm=use_llm)
     scored     = score_keywords(candidates, app_id)
     gaps       = find_keyword_gaps(app_id)
     _save_keywords(scored + gaps, app_id)
@@ -65,7 +74,7 @@ def run_keyword_analysis(app_id: int, use_llm: bool = True) -> dict:
     return {"top_keywords": top_k, "gaps": gaps, "narrative": narrative}
 
 
-def extract_keywords(target_app: dict, all_apps: list[dict]) -> list[str]:
+def extract_keywords(target_app: dict, all_apps: list[dict], use_llm: bool = False) -> list[str]:
     """
     Discover candidate keywords using Apple's own autocomplete API.
     All candidates are real terms users actually search for.
@@ -73,7 +82,7 @@ def extract_keywords(target_app: dict, all_apps: list[dict]) -> list[str]:
     candidates = set()
 
     # Source 1: autocomplete on seed terms derived from the target app itself
-    for seed in derive_seed_keywords(target_app):
+    for seed in derive_seed_keywords(target_app, use_llm=use_llm):
         suggestions = scraper.fetch_keyword_suggestions(seed)
         candidates.update(suggestions)
 

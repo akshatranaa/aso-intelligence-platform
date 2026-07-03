@@ -96,6 +96,49 @@ def _call_llm(prompt: str, expect_json: bool = False) -> dict | list | str | Non
         return None
 
 
+def generate_seed_keywords(app_data: dict, use_llm: bool = True) -> list[str] | None:
+    """
+    Generate app-specific seed search terms from the app's name and description.
+
+    These are the terms real users would type to find apps like this one —
+    far more targeted than the generic category-based fallback (e.g. "vpn",
+    "secure vpn", "wifi proxy" for a VPN app instead of "productivity").
+
+    Args:
+        app_data: App metadata dict with name, category, and description.
+        use_llm:  If False, return None immediately without calling the API.
+
+    Returns:
+        List of lowercase seed term strings, or None on failure/opt-out.
+    """
+    if not use_llm:
+        return None
+
+    name        = app_data.get("name", "")
+    category    = app_data.get("category", "")
+    description = (app_data.get("description") or "")[:500]
+
+    prompt = f"""
+You are an App Store Optimization expert.
+
+Give 5-8 short seed search terms (1-3 words each) that real users would type
+into the App Store to discover apps like this one. Focus on the app's core
+function and category — not its brand name.
+
+App name: {name}
+Category: {category}
+Description: {description}
+
+Return ONLY a JSON array of lowercase strings and nothing else.
+Example: ["vpn", "secure vpn", "wifi proxy", "unblock sites"]
+"""
+    result = _call_llm(prompt, expect_json=True)
+    if not isinstance(result, list):
+        return None
+    seeds = [str(s).strip().lower() for s in result if str(s).strip()]
+    return seeds or None
+
+
 def analyse_reviews(reviews: list[dict], use_llm: bool = True) -> dict | None:
     """
     Deep analysis of review text to extract structured themes and sentiment.
