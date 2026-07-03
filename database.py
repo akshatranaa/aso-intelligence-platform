@@ -485,6 +485,92 @@ def update_sentiment(review_id: int, score: float, label: str) -> None:
         )
 
 
+def update_sentiment_labels(reviews: list[dict]) -> None:
+    """
+    Bulk-write sentiment score and label back to many review rows.
+
+    Args:
+        reviews: List of scored review dicts, each with review_id,
+                 sentiment_score, and sentiment_label.
+    """
+    if not reviews:
+        return
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.executemany(
+            """
+            UPDATE reviews
+            SET sentiment_score = %s, sentiment_label = %s
+            WHERE review_id = %s
+            """,
+            [
+                (r["sentiment_score"], r["sentiment_label"], r["review_id"])
+                for r in reviews
+            ],
+        )
+
+
+def update_rank_velocity(ranking_id: int, velocity: float) -> None:
+    """
+    Write a computed rank velocity back to one ranking row.
+
+    Args:
+        ranking_id: Primary key (id) of the ranking row.
+        velocity:   Mean rank change per day.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE rankings SET rank_velocity = %s WHERE id = %s",
+            (velocity, ranking_id),
+        )
+
+
+def update_keyword_confirmed_scores(
+    app_id: int,
+    keyword: str,
+    confirmed_volume: float,
+    confirmed_conversion: float,
+    confirmed_cpi: float,
+    revised_opportunity: float,
+    updated_at: str,
+) -> None:
+    """
+    Write Search Ads confirmed metrics and the revised opportunity to a keyword.
+
+    Args:
+        app_id:               iTunes app ID.
+        keyword:              Keyword string.
+        confirmed_volume:     Confirmed search volume proxy.
+        confirmed_conversion: Confirmed conversion rate.
+        confirmed_cpi:        Confirmed cost per install.
+        revised_opportunity:  Recomputed opportunity score.
+        updated_at:           ISO timestamp for the update.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE keywords
+            SET confirmed_volume     = %s,
+                confirmed_conversion = %s,
+                confirmed_cpi        = %s,
+                revised_opportunity  = %s,
+                updated_at           = %s
+            WHERE app_id = %s AND keyword = %s
+            """,
+            (
+                confirmed_volume,
+                confirmed_conversion,
+                confirmed_cpi,
+                revised_opportunity,
+                updated_at,
+                app_id,
+                keyword,
+            ),
+        )
+
+
 def get_competitor_apps() -> list[dict]:
     """
     Fetch all apps that are not the target app.

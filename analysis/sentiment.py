@@ -8,7 +8,6 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import config
 import database
 from analysis import llm_analyst
-from database import get_connection
 
 logger = logging.getLogger(__name__)
 
@@ -217,18 +216,7 @@ def _save_sentiment_labels(reviews: list[dict]) -> None:
         reviews: List of scored review dicts containing review_id,
                  sentiment_score, and sentiment_label.
     """
-    with get_connection() as conn:
-        conn.executemany(
-            """
-            UPDATE reviews
-            SET sentiment_score = ?, sentiment_label = ?
-            WHERE review_id = ?
-            """,
-            [
-                (r["sentiment_score"], r["sentiment_label"], r["review_id"])
-                for r in reviews
-            ],
-        )
+    database.update_sentiment_labels(reviews)
     logger.info(f"Saved sentiment labels for {len(reviews)} reviews")
 
 

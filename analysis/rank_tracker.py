@@ -61,11 +61,7 @@ def compute_velocity(app_id: int, keyword: str) -> float | None:
     ]
     velocity = sum(deltas) / len(deltas)
 
-    with database.get_connection() as conn:
-        conn.execute(
-            "UPDATE rankings SET rank_velocity = ? WHERE id = ?",
-            (velocity, recent[-1]["id"]),
-        )
+    database.update_rank_velocity(recent[-1]["id"], velocity)
     logger.info(f"Velocity '{keyword}': {velocity:.3f} positions/day")
     return velocity
 

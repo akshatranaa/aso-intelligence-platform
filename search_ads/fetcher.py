@@ -216,27 +216,15 @@ def update_keyword_scores(app_id: int) -> int:
             relevance = existing_keywords[kw_str].get("proxy_opportunity", 0.0)
             revised   = _compute_revised_opportunity(row, relevance)
 
-            with database.get_connection() as conn:
-                conn.execute(
-                    """
-                    UPDATE keywords
-                    SET confirmed_volume     = ?,
-                        confirmed_conversion = ?,
-                        confirmed_cpi        = ?,
-                        revised_opportunity  = ?,
-                        updated_at           = ?
-                    WHERE app_id = ? AND keyword = ?
-                    """,
-                    (
-                        row["impression_share"],
-                        row["conversion_rate"],
-                        row["avg_cpi"],
-                        revised,
-                        datetime.now().isoformat(),
-                        app_id,
-                        kw_str,
-                    ),
-                )
+            database.update_keyword_confirmed_scores(
+                app_id=app_id,
+                keyword=kw_str,
+                confirmed_volume=row["impression_share"],
+                confirmed_conversion=row["conversion_rate"],
+                confirmed_cpi=row["avg_cpi"],
+                revised_opportunity=revised,
+                updated_at=datetime.now().isoformat(),
+            )
             updated += 1
 
     logger.info(f"Updated confirmed scores for {updated} keywords")
