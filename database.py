@@ -44,7 +44,7 @@ def create_tables() -> None:
         cursor = conn.cursor()
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS apps (
-                app_id              INTEGER PRIMARY KEY,
+                app_id              BIGINT PRIMARY KEY,
                 name                TEXT NOT NULL,
                 description         TEXT,
                 release_notes       TEXT,
@@ -66,7 +66,7 @@ def create_tables() -> None:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS reviews (
                 review_id           SERIAL PRIMARY KEY,
-                app_id              INTEGER NOT NULL,
+                app_id              BIGINT NOT NULL,
                 review_text         TEXT,
                 rating              INTEGER,
                 review_date         TEXT,
@@ -82,7 +82,7 @@ def create_tables() -> None:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS keywords (
                 id                  SERIAL PRIMARY KEY,
-                app_id              INTEGER NOT NULL,
+                app_id              BIGINT NOT NULL,
                 keyword             TEXT NOT NULL,
                 proxy_volume        REAL,
                 proxy_difficulty    REAL,
@@ -108,7 +108,7 @@ def create_tables() -> None:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS rankings (
                 id                  SERIAL PRIMARY KEY,
-                app_id              INTEGER NOT NULL,
+                app_id              BIGINT NOT NULL,
                 keyword             TEXT NOT NULL,
                 rank                INTEGER,
                 date                TEXT NOT NULL,
@@ -120,7 +120,7 @@ def create_tables() -> None:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS search_ads_campaigns (
                 campaign_id         TEXT PRIMARY KEY,
-                app_id              INTEGER NOT NULL,
+                app_id              BIGINT NOT NULL,
                 name                TEXT,
                 bucket_type         TEXT,
                 start_date          TEXT,
