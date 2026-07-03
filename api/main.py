@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from datetime import date, datetime
 from typing import Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 import config
@@ -54,6 +55,72 @@ _SEED_KEYWORDS = [
     "music streaming",
     "audio player",
 ]
+
+# In-memory job store for the async /collect flow. Render's proxy kills any
+# single HTTP request after ~100s, but /collect legitimately takes several
+# minutes (strict 1 req/sec rate limiting on every Apple API call), so it
+# runs as a background task and the client polls for status instead.
+_jobs: dict[str, dict] = {}
+
+
+def _run_collection(job_id: str, app_name: str, use_llm: bool) -> None:
+    """
+    Run the full collection pipeline and record its outcome in _jobs.
+
+    Args:
+        job_id:   Unique ID for this job, used as the _jobs dict key.
+        app_name: App name to search for on the App Store.
+        use_llm:  Whether to use LLM during analysis steps.
+    """
+    try:
+        database.create_tables()
+
+        app_data = scraper.fetch_app_metadata(app_name)
+        if not app_data:
+            _jobs[job_id] = {"status": "error", "detail": f"'{app_name}' not found on the App Store"}
+            return
+
+        app_data["is_target_app"] = 1
+        database.save_app(app_data)
+        app_id = app_data["app_id"]
+        logger.info(f"Collecting data for {app_data['name']} ({app_id})")
+
+        competitor.discover_competitors(app_id, _SEED_KEYWORDS, max_depth=1)
+
+        today = str(date.today())
+        for keyword in _SEED_KEYWORDS:
+            rank = scraper.fetch_keyword_ranking(keyword, app_id)
+            if rank:
+                database.save_ranking(app_id, keyword, rank, today)
+
+        reviews = scraper.fetch_reviews(app_id)
+        collected_at = datetime.now().isoformat()
+        for review in reviews:
+            review["app_id"]       = app_id
+            review["collected_at"] = collected_at
+        review_count = database.save_reviews(reviews)
+
+        sentiment_summary = sentiment.score_all_reviews(app_id, use_llm=use_llm)
+        kw_result         = keyword_analysis.run_keyword_analysis(app_id, use_llm=use_llm)
+        rank_tracker.take_snapshot(app_id, _SEED_KEYWORDS)
+        rank_tracker.compute_all_velocities(app_id)
+
+        logger.info(f"Collection complete for {app_data['name']}")
+        _jobs[job_id] = {
+            "status": "done",
+            "result": {
+                "app_id":         app_id,
+                "app_name":       app_data["name"],
+                "reviews_saved":  review_count,
+                "keywords_found": len(kw_result.get("top_keywords", [])),
+                "gaps_found":     len(kw_result.get("gaps", [])),
+                "sentiment":      sentiment_summary,
+                "collected_at":   collected_at,
+            },
+        }
+    except Exception as e:
+        logger.error(f"Collection job {job_id} failed: {e}")
+        _jobs[job_id] = {"status": "error", "detail": str(e)}
 
 
 @app.get("/")
@@ -211,61 +278,41 @@ def get_recommendations(app_id: int, use_llm: bool = False) -> dict:
 
 
 @app.post("/collect/{app_name}", dependencies=[Depends(verify_api_key)])
-def collect_app(app_name: str, use_llm: bool = False) -> dict:
+def collect_app(app_name: str, background_tasks: BackgroundTasks, use_llm: bool = False) -> dict:
     """
-    Trigger the full collection and analysis pipeline for an app.
+    Start the full collection and analysis pipeline for an app in the background.
 
-    Fetches from Apple, discovers competitors, scores keywords,
-    runs sentiment, and takes a rank snapshot.
+    Returns immediately with a job_id — the pipeline takes several minutes
+    (strict rate limiting on every Apple API call), which exceeds most
+    reverse-proxy request timeouts. Poll GET /collect/status/{job_id} for
+    progress and the final result.
 
     Args:
         app_name: App name to search for on the App Store.
         use_llm:  Whether to use LLM during analysis steps (query param).
 
     Returns:
-        Summary dict with counts from each pipeline stage.
+        Dict with job_id and initial status.
     """
-    database.create_tables()
+    job_id = str(uuid.uuid4())
+    _jobs[job_id] = {"status": "running"}
+    background_tasks.add_task(_run_collection, job_id, app_name, use_llm)
+    return {"job_id": job_id, "status": "running"}
 
-    app_data = scraper.fetch_app_metadata(app_name)
-    if not app_data:
-        raise HTTPException(
-            status_code=404,
-            detail=f"'{app_name}' not found on the App Store",
-        )
 
-    app_data["is_target_app"] = 1
-    database.save_app(app_data)
-    app_id = app_data["app_id"]
-    logger.info(f"Collecting data for {app_data['name']} ({app_id})")
+@app.get("/collect/status/{job_id}")
+def get_collect_status(job_id: str) -> dict:
+    """
+    Poll the status of a background collection job.
 
-    competitor.discover_competitors(app_id, _SEED_KEYWORDS, max_depth=1)
+    Args:
+        job_id: ID returned by POST /collect/{app_name}.
 
-    today = str(date.today())
-    for keyword in _SEED_KEYWORDS:
-        rank = scraper.fetch_keyword_ranking(keyword, app_id)
-        if rank:
-            database.save_ranking(app_id, keyword, rank, today)
-
-    reviews = scraper.fetch_reviews(app_id)
-    collected_at = datetime.now().isoformat()
-    for review in reviews:
-        review["app_id"]       = app_id
-        review["collected_at"] = collected_at
-    review_count = database.save_reviews(reviews)
-
-    sentiment_summary = sentiment.score_all_reviews(app_id, use_llm=use_llm)
-    kw_result         = keyword_analysis.run_keyword_analysis(app_id, use_llm=use_llm)
-    rank_tracker.take_snapshot(app_id, _SEED_KEYWORDS)
-    rank_tracker.compute_all_velocities(app_id)
-
-    logger.info(f"Collection complete for {app_data['name']}")
-    return {
-        "app_id":         app_id,
-        "app_name":       app_data["name"],
-        "reviews_saved":  review_count,
-        "keywords_found": len(kw_result.get("top_keywords", [])),
-        "gaps_found":     len(kw_result.get("gaps", [])),
-        "sentiment":      sentiment_summary,
-        "collected_at":   collected_at,
-    }
+    Returns:
+        Dict with status ("running", "done", or "error") and, once
+        finished, either a result dict or an error detail string.
+    """
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    return {"job_id": job_id, **job}

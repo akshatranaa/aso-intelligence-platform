@@ -1,7 +1,11 @@
 """ASO Intelligence Platform — Home page and app selector."""
 
+import time
+
 import streamlit as st
 from utils import api_get, api_post
+
+_POLL_INTERVAL_SECONDS = 5
 
 st.set_page_config(
     page_title="ASO Intelligence Platform",
@@ -32,19 +36,42 @@ with left:
         if not app_name_input.strip():
             st.warning("Please enter an app name.")
         else:
-            with st.spinner(f"Collecting data for '{app_name_input}'... this takes a few minutes"):
-                suffix = "?use_llm=true" if use_llm else "?use_llm=false"
-                result = api_post(f"/collect/{app_name_input.strip()}{suffix}")
-            if result:
-                st.session_state.app_id   = result["app_id"]
-                st.session_state.app_name = result["app_name"]
-                st.success(f"✅ Collection complete for **{result['app_name']}**")
-                st.json({
-                    "App ID":         result["app_id"],
-                    "Reviews saved":  result["reviews_saved"],
-                    "Keywords found": result["keywords_found"],
-                    "Gaps found":     result["gaps_found"],
-                })
+            suffix = "?use_llm=true" if use_llm else "?use_llm=false"
+            start = api_post(f"/collect/{app_name_input.strip()}{suffix}")
+
+            if start and start.get("job_id"):
+                job_id = start["job_id"]
+                status_line = st.empty()
+                result = None
+                elapsed = 0
+
+                with st.spinner(f"Collecting data for '{app_name_input}'... this takes a few minutes"):
+                    while True:
+                        status_line.caption(f"Still working... ({elapsed}s elapsed)")
+                        job = api_get(f"/collect/status/{job_id}")
+                        if not job:
+                            st.error("Lost connection while checking job status.")
+                            break
+                        if job["status"] == "done":
+                            result = job["result"]
+                            break
+                        if job["status"] == "error":
+                            st.error(f"Collection failed: {job.get('detail', 'unknown error')}")
+                            break
+                        time.sleep(_POLL_INTERVAL_SECONDS)
+                        elapsed += _POLL_INTERVAL_SECONDS
+
+                status_line.empty()
+                if result:
+                    st.session_state.app_id   = result["app_id"]
+                    st.session_state.app_name = result["app_name"]
+                    st.success(f"✅ Collection complete for **{result['app_name']}**")
+                    st.json({
+                        "App ID":         result["app_id"],
+                        "Reviews saved":  result["reviews_saved"],
+                        "Keywords found": result["keywords_found"],
+                        "Gaps found":     result["gaps_found"],
+                    })
 
 with right:
     st.subheader("📂 Load Existing App")
