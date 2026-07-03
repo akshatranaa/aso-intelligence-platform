@@ -5,7 +5,7 @@ ITUNES_REVIEWS_URL      = "https://itunes.apple.com/{country}/rss/customerreview
 ITUNES_AUTOCOMPLETE_URL = "https://search.itunes.apple.com/WebObjects/MZSearchHints.woa/wa/hints"
 
 # Defaults
-DEFAULT_COUNTRY        = "india"
+DEFAULT_COUNTRY        = "in"
 DEFAULT_LIMIT          = 200
 RANKING_SEARCH_LIMIT   = 200
 
