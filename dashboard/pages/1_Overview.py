@@ -40,7 +40,9 @@ if sentiment:
     s1.metric("Total Reviews",   sentiment.get("total_reviews", 0))
     s2.metric("Positive",        f"{sentiment.get('positive_pct', 0)}%")
     s3.metric("Negative",        f"{sentiment.get('negative_pct', 0)}%")
-    s4.metric("Avg Rating",      f"{sentiment.get('avg_rating', 0)} ⭐")
+    s4.metric("Reviews Avg",     f"{sentiment.get('avg_rating', 0)} ⭐",
+              help="Average rating of the recent reviews collected — a recency-skewed "
+                   "sample, NOT the app's official all-time store rating (shown above).")
     st.divider()
 
 # ── Ranking snapshot ──────────────────────────────────────────────────────────

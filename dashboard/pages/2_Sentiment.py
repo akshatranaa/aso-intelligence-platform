@@ -25,7 +25,9 @@ c1, c2, c3, c4 = st.columns(4)
 c1.metric("Total Reviews",  sentiment.get("total_reviews", 0))
 c2.metric("Positive",       f"{sentiment.get('positive_pct', 0)}%")
 c3.metric("Negative",       f"{sentiment.get('negative_pct', 0)}%")
-c4.metric("Avg Rating",     f"{sentiment.get('avg_rating', 0)} ⭐")
+c4.metric("Reviews Avg",    f"{sentiment.get('avg_rating', 0)} ⭐",
+          help="Average rating of the recent reviews collected here — a small, "
+               "recency-skewed sample, NOT the app's official all-time store rating.")
 
 st.divider()
 
