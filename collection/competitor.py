@@ -16,6 +16,7 @@ def calculate_competitor_score(
     app_data: dict,
     target_keywords: list[str],
     target_category: str,
+    keyword_overlap: float | None = None,
 ) -> float:
     """
     Score how strongly this app competes with the target app.
@@ -24,6 +25,8 @@ def calculate_competitor_score(
         app_data:        App metadata dict from scraper.
         target_keywords: Keywords the target app targets.
         target_category: Primary genre of the target app.
+        keyword_overlap: Precomputed overlap to reuse (avoids re-hitting the
+                         API); computed here if not supplied.
 
     Returns:
         Float in [0.0, 1.0] representing competitive strength.
@@ -36,7 +39,8 @@ def calculate_competitor_score(
 
     category_match = 1.0 if app_data.get("category") == target_category else 0.0
 
-    keyword_overlap = _compute_keyword_overlap(app_data["app_id"], target_keywords)
+    if keyword_overlap is None:
+        keyword_overlap = _compute_keyword_overlap(app_data["app_id"], target_keywords)
 
     w = config.COMPETITOR_WEIGHTS
     final_score = (
@@ -157,7 +161,21 @@ def discover_competitors(
         if app_data is None:
             continue
 
-        score = calculate_competitor_score(app_data, target_keywords, target_category)
+        # Relevance gate: an app in a different category must still rank for a
+        # meaningful share of the seed keywords. This stops hugely popular but
+        # unrelated apps (ChatGPT, Calculator) from qualifying on popularity alone.
+        category_match  = app_data.get("category") == target_category
+        keyword_overlap = _compute_keyword_overlap(app_data["app_id"], target_keywords)
+        if not category_match and keyword_overlap < config.MIN_COMPETITOR_OVERLAP:
+            logger.info(
+                f"App {current_id} failed relevance gate "
+                f"(overlap={keyword_overlap:.2f}, diff category) — skipping"
+            )
+            continue
+
+        score = calculate_competitor_score(
+            app_data, target_keywords, target_category, keyword_overlap=keyword_overlap
+        )
         tier = assign_tier(score)
 
         if tier is not None:

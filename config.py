@@ -27,6 +27,11 @@ COMPETITOR_WEIGHTS = {
 TIER_1_THRESHOLD = 0.75
 TIER_2_THRESHOLD = 0.45
 
+# Relevance gate: a cross-category app must rank for at least this fraction of
+# the seed keywords to qualify, so popularity alone can't make an unrelated
+# app (e.g. ChatGPT, Calculator) a "competitor".
+MIN_COMPETITOR_OVERLAP = 0.3
+
 # Keyword analysis weights — must sum to 1.0
 PROXY_OPPORTUNITY_WEIGHTS = {
     "volume":     0.45,
