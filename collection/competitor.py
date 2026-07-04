@@ -82,8 +82,10 @@ def _gather_candidates(target_app_id: int, target_keywords: list[str]) -> list[d
         List of candidate app metadata dicts.
     """
     candidate_ids: set[int] = set()
-    for keyword in target_keywords:
-        for app_id in scraper.fetch_keyword_apps(keyword):
+    for keyword in target_keywords[: config.COMPETITOR_SEEDS_MAX]:
+        for app_id in scraper.fetch_keyword_apps(
+            keyword, limit=config.COMPETITOR_CANDIDATES_PER_SEED
+        ):
             if app_id != target_app_id:
                 candidate_ids.add(app_id)
 

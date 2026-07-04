@@ -27,6 +27,11 @@ COMPETITOR_WEIGHTS = {
 # tier1 (top same-category competitors, score >= threshold) vs tier2 (the rest).
 TIER_1_THRESHOLD = 0.40
 
+# Competitor candidate discovery — cap the pool the judge has to score:
+# up to COMPETITOR_SEEDS_MAX seeds x COMPETITOR_CANDIDATES_PER_SEED results = ~75.
+COMPETITOR_SEEDS_MAX          = 5
+COMPETITOR_CANDIDATES_PER_SEED = 15
+
 # Keyword analysis weights — must sum to 1.0
 PROXY_OPPORTUNITY_WEIGHTS = {
     "volume":     0.45,
