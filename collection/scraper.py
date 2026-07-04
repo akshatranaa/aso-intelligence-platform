@@ -37,6 +37,7 @@ def _parse_app_fields(result: dict, country: str) -> dict:
         "description":    result.get("description"),
         "release_notes":  result.get("releaseNotes"),
         "category":       result.get("primaryGenreName"),
+        "genres":         result.get("genres", []),
         "avg_rating":     result.get("averageUserRating"),
         "rating_count":   result.get("userRatingCount"),
         "price":          result.get("price"),

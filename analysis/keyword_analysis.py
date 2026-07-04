@@ -15,7 +15,7 @@ from collection import scraper
 logger = logging.getLogger(__name__)
 
 
-def derive_seed_keywords(app_data: dict, use_llm: bool = False) -> list[str]:
+def derive_seed_keywords(app_data: dict, use_llm: bool = False) -> tuple[list[str], bool]:
     """
     Build seed search terms for a target app.
 
@@ -29,7 +29,9 @@ def derive_seed_keywords(app_data: dict, use_llm: bool = False) -> list[str]:
         use_llm:  Whether to generate seeds via the LLM.
 
     Returns:
-        Deduplicated list of lowercase seed search terms.
+        Tuple of (deduplicated lowercase seed terms, used_llm_seeds). The flag
+        is True only when the LLM actually produced seeds; False when use_llm
+        is off or the LLM failed and it fell back to category seeds.
     """
     name = app_data.get("name", "").split(":")[0].strip(string.punctuation).strip().lower()
 
@@ -37,7 +39,7 @@ def derive_seed_keywords(app_data: dict, use_llm: bool = False) -> list[str]:
         llm_seeds = llm_analyst.generate_seed_keywords(app_data, use_llm=True)
         if llm_seeds:
             seeds = ([name] if name else []) + llm_seeds
-            return [s for s in dict.fromkeys(seeds) if s]
+            return [s for s in dict.fromkeys(seeds) if s], True
 
     # Fallback: name + category-based seeds
     category = (app_data.get("category") or "").strip().lower()
@@ -47,22 +49,26 @@ def derive_seed_keywords(app_data: dict, use_llm: bool = False) -> list[str]:
     if category:
         seeds.append(category)
         seeds.append(f"{category} app")
-    return [s for s in dict.fromkeys(seeds) if s]
+    return [s for s in dict.fromkeys(seeds) if s], False
 
 
-def run_keyword_analysis(app_id: int, use_llm: bool = True) -> dict:
+def run_keyword_analysis(
+    app_id: int, use_llm: bool = True, seed_keywords: list[str] | None = None
+) -> dict:
     """
     Master function — run the full keyword pipeline for one app.
 
     Args:
-        app_id:  iTunes app ID of the target app.
-        use_llm: Whether to generate an LLM strategy narrative.
+        app_id:        iTunes app ID of the target app.
+        use_llm:       Whether to generate an LLM strategy narrative.
+        seed_keywords: Precomputed seeds to reuse (avoids a second LLM
+                       derivation); derived internally if not supplied.
 
     Returns:
         Dict with top_keywords, gaps, and narrative keys.
     """
     target_app = database.get_app(app_id)
-    candidates = extract_keywords(target_app, use_llm=use_llm)
+    candidates = extract_keywords(target_app, use_llm=use_llm, seed_keywords=seed_keywords)
     scored     = score_keywords(candidates, app_id)
     gaps       = find_keyword_gaps(app_id)
     _save_keywords(scored + gaps, app_id)
@@ -73,15 +79,25 @@ def run_keyword_analysis(app_id: int, use_llm: bool = True) -> dict:
     return {"top_keywords": top_k, "gaps": gaps, "narrative": narrative}
 
 
-def extract_keywords(target_app: dict, use_llm: bool = False) -> list[str]:
+def extract_keywords(
+    target_app: dict, use_llm: bool = False, seed_keywords: list[str] | None = None
+) -> list[str]:
     """
     Discover candidate keywords using Apple's own autocomplete API.
     All candidates are real terms users actually search for.
+
+    Args:
+        target_app:    Target app metadata dict.
+        use_llm:       Whether to derive Source-1 seeds via the LLM.
+        seed_keywords: Precomputed Source-1 seeds to reuse (avoids a second LLM
+                       derivation); derived internally if not supplied.
     """
     candidates = set()
 
     # Source 1: autocomplete on seed terms derived from the target app itself
-    for seed in derive_seed_keywords(target_app, use_llm=use_llm):
+    if seed_keywords is None:
+        seed_keywords, _ = derive_seed_keywords(target_app, use_llm=use_llm)
+    for seed in seed_keywords:
         suggestions = scraper.fetch_keyword_suggestions(seed)
         candidates.update(suggestions)
 

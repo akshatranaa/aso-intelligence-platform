@@ -15,22 +15,17 @@ RATE_LIMIT_SECONDS = 1
 # Database — connection string comes from the DATABASE_URL environment variable
 # (see database.py). Postgres-hosted (e.g. Neon), not a local file.
 
-# Competitor scoring weights — must sum to 1.0
+# Competitor scoring weights — must sum to 1.0. Relevance is decided by the LLM
+# judge (llm_analyst.judge_competitors), so the score only ranks already-relevant
+# competitors by popularity and quality for tier assignment.
 COMPETITOR_WEIGHTS = {
-    "rating_count":    0.35,
-    "avg_rating":      0.15,
-    "keyword_overlap": 0.40,
-    "category_match":  0.10
+    "rating_count": 0.70,
+    "avg_rating":   0.30,
 }
 
-# Competitor tier thresholds
-TIER_1_THRESHOLD = 0.75
-TIER_2_THRESHOLD = 0.45
-
-# Relevance gate: a cross-category app must rank for at least this fraction of
-# the seed keywords to qualify, so popularity alone can't make an unrelated
-# app (e.g. ChatGPT, Calculator) a "competitor".
-MIN_COMPETITOR_OVERLAP = 0.3
+# Competitor tier split. Every LLM-judged competitor is saved; this only decides
+# tier1 (top same-category competitors, score >= threshold) vs tier2 (the rest).
+TIER_1_THRESHOLD = 0.40
 
 # Keyword analysis weights — must sum to 1.0
 PROXY_OPPORTUNITY_WEIGHTS = {
@@ -60,13 +55,13 @@ RANK_VELOCITY_DAYS   = 7
 LOG_LEVEL  = "INFO"
 LOG_FORMAT = "%(asctime)s — %(name)s — %(levelname)s — %(message)s"
 
-# LLM settings — served via OpenRouter (OpenAI-compatible REST API)
-OPENROUTER_URL        = "https://openrouter.ai/api/v1/chat/completions"
-LLM_MODEL             = "google/gemma-4-31b-it:free"  # exact OpenRouter model slug
-LLM_MAX_TOKENS        = 1024
-LLM_MAX_RETRIES       = 2  # retries on transient errors (429/503/timeout)
+# LLM settings — served via Google Gemini (generateContent REST API)
+GEMINI_BASE_URL       = "https://generativelanguage.googleapis.com/v1beta/models"
+LLM_MODEL             = "gemini-2.5-flash-lite"  # gemini-2.0-flash is free-tier limit-0
+LLM_MAX_TOKENS        = 1024  # per-call output cap (conserves free quota)
+LLM_MAX_RETRIES       = 2     # retries on transient errors (429/503/timeout)
 LLM_REVIEW_BATCH_SIZE = 20
-LLM_TOP_REVIEWS       = 50
+LLM_TOP_REVIEWS       = 30    # trimmed to conserve free quota
 
 # Sentiment thresholds (VADER compound score)
 SENTIMENT_POSITIVE_THRESHOLD =  0.05

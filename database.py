@@ -168,15 +168,19 @@ def create_tables() -> None:
     logger.info("All database tables created (or already exist)")
 
 
-def save_app(app_dict: dict) -> bool:
+def save_app(app_dict: dict) -> None:
     """
-    Insert one app row, ignoring the insert if app_id already exists.
+    Insert an app row, or refresh its metadata if it already exists.
+
+    On conflict the objective metadata (name, ratings, description, country,
+    etc.) is refreshed so re-collecting an app updates stale values. The
+    is_target_app flag is kept "sticky" via GREATEST — a competitor re-save
+    (0) never demotes an existing target (1), but a target-save (1) promotes a
+    former competitor. The vestigial competitor_tier/competitor_score columns
+    (now owned by the competitors join table) are left untouched.
 
     Args:
         app_dict: Dict whose keys match apps table column names exactly.
-
-    Returns:
-        True if the row was inserted, False if it already existed.
     """
     collected_at = app_dict.get("collected_at", datetime.now().isoformat())
     with get_connection() as conn:
@@ -189,7 +193,21 @@ def save_app(app_dict: dict) -> bool:
                 min_os_version, version, country, is_target_app,
                 competitor_tier, competitor_score, collected_at
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (app_id) DO NOTHING
+            ON CONFLICT (app_id) DO UPDATE SET
+                name           = EXCLUDED.name,
+                description    = EXCLUDED.description,
+                release_notes  = EXCLUDED.release_notes,
+                category       = EXCLUDED.category,
+                avg_rating     = EXCLUDED.avg_rating,
+                rating_count   = EXCLUDED.rating_count,
+                price          = EXCLUDED.price,
+                seller_name    = EXCLUDED.seller_name,
+                bundle_id      = EXCLUDED.bundle_id,
+                min_os_version = EXCLUDED.min_os_version,
+                version        = EXCLUDED.version,
+                country        = EXCLUDED.country,
+                collected_at   = EXCLUDED.collected_at,
+                is_target_app  = GREATEST(apps.is_target_app, EXCLUDED.is_target_app)
             """,
             (
                 app_dict["app_id"],
@@ -211,10 +229,6 @@ def save_app(app_dict: dict) -> bool:
                 collected_at,
             ),
         )
-        inserted = cursor.rowcount == 1
-    if not inserted:
-        logger.warning(f"App {app_dict.get('app_id')} already exists, skipping")
-    return inserted
 
 
 def save_reviews(reviews_list: list[dict]) -> int:

@@ -1,4 +1,4 @@
-"""Owns all LLM API calls (via OpenRouter). No other module calls the API directly."""
+"""Owns all LLM API calls (via Google Gemini). No other module calls the API directly."""
 
 from __future__ import annotations
 
@@ -16,13 +16,13 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Provider-side transient statuses worth retrying (free models get these a lot).
+# Provider-side transient statuses worth retrying.
 _RETRYABLE_STATUS = {429, 500, 502, 503, 529}
 
 
 def _call_llm(prompt: str, expect_json: bool = False) -> dict | list | str | None:
     """
-    Central function that makes every LLM API call, via OpenRouter.
+    Central function that makes every LLM API call, via Google Gemini.
 
     Retries up to config.LLM_MAX_RETRIES times on transient errors
     (rate limits, upstream unavailability, timeouts) with exponential
@@ -37,21 +37,24 @@ def _call_llm(prompt: str, expect_json: bool = False) -> dict | list | str | Non
         Parsed JSON dict/list if expect_json=True, raw string otherwise,
         or None if the call ultimately fails or the JSON parse fails.
     """
-    api_key = os.environ.get("OPENROUTER_API_KEY")
+    api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        logger.error("OPENROUTER_API_KEY not set — skipping LLM call")
+        logger.error("GEMINI_API_KEY not set — skipping LLM call")
         return None
 
+    url = f"{config.GEMINI_BASE_URL}/{config.LLM_MODEL}:generateContent"
     text = None
     for attempt in range(config.LLM_MAX_RETRIES + 1):
         try:
             response = httpx.post(
-                config.OPENROUTER_URL,
-                headers={"Authorization": f"Bearer {api_key}"},
+                url,
+                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
                 json={
-                    "model": config.LLM_MODEL,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": config.LLM_MAX_TOKENS,
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {
+                        "maxOutputTokens": config.LLM_MAX_TOKENS,
+                        "temperature": 0,
+                    },
                 },
                 timeout=60.0,
             )
@@ -64,7 +67,9 @@ def _call_llm(prompt: str, expect_json: bool = False) -> dict | list | str | Non
                 time.sleep(wait)
                 continue
             response.raise_for_status()
-            text = response.json()["choices"][0]["message"]["content"]
+            candidates = response.json().get("candidates", [])
+            parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
+            text = parts[0].get("text") if parts else None
             break
         except httpx.RequestError as e:
             # Network/timeout error — retry if attempts remain, else give up.
@@ -137,6 +142,64 @@ Example: ["vpn", "secure vpn", "wifi proxy", "unblock sites"]
         return None
     seeds = [str(s).strip().lower() for s in result if str(s).strip()]
     return seeds or None
+
+
+def judge_competitors(target_app: dict, candidates: list[dict], use_llm: bool = True) -> set[int]:
+    """
+    Classify which candidate apps are genuine competitors of the target.
+
+    One batched LLM call reads the target and each candidate (name + short
+    description) and returns the app_ids that share the target's core purpose —
+    so unrelated-but-popular apps (ChatGPT, Calculator) are excluded regardless
+    of category or keyword overlap.
+
+    Args:
+        target_app: Target app dict with name and description.
+        candidates: List of candidate app dicts (app_id, name, description).
+        use_llm:    If False, return all candidate ids (no gating).
+
+    Returns:
+        Set of competitor app_ids. On opt-out or LLM failure, returns all
+        candidate ids (never silently drops everyone).
+    """
+    all_ids = {c["app_id"] for c in candidates}
+    if not use_llm or not candidates:
+        return all_ids
+
+    def _short(app):
+        return (app.get("description") or "")[:200].replace("\n", " ")
+
+    listing = "\n".join(
+        f'{c["app_id"]}: {c.get("name","")} — {_short(c)}' for c in candidates
+    )
+    prompt = f"""
+You are an App Store competitive-analysis expert.
+
+TARGET APP: {target_app.get("name","")} — {_short(target_app)}
+
+Below is a numbered list of candidate apps (format "app_id: name — description").
+Return ONLY a JSON array of the app_id integers that are genuine DIRECT
+competitors of the target — apps with the same core purpose/function. Exclude
+apps that are merely popular or loosely related.
+
+Candidates:
+{listing}
+
+Return only the JSON array of app_id integers.
+"""
+    result = _call_llm(prompt, expect_json=True)
+    if not isinstance(result, list):
+        logger.warning("Competitor judge failed — keeping all candidates")
+        return all_ids
+    judged = set()
+    for x in result:
+        try:
+            judged.add(int(x))
+        except (TypeError, ValueError):
+            continue
+    # Only trust ids that were actually in the candidate set.
+    judged &= all_ids
+    return judged or all_ids
 
 
 def analyse_reviews(reviews: list[dict], use_llm: bool = True) -> dict | None:

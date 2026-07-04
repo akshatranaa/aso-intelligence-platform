@@ -75,10 +75,13 @@ def _run_collection(job_id: str, app_name: str, use_llm: bool) -> None:
         app_data["is_target_app"] = 1
         database.save_app(app_data)
         app_id = app_data["app_id"]
-        seed_keywords = keyword_analysis.derive_seed_keywords(app_data, use_llm=use_llm)
+        # Derive seeds once and reuse everywhere (one LLM call, consistent status).
+        seed_keywords, used_llm_seeds = keyword_analysis.derive_seed_keywords(
+            app_data, use_llm=use_llm
+        )
         logger.info(f"Collecting data for {app_data['name']} ({app_id})")
 
-        competitor.discover_competitors(app_id, seed_keywords, max_depth=1)
+        competitor.discover_competitors(app_id, seed_keywords, use_llm=use_llm)
 
         today = str(date.today())
         for keyword in seed_keywords:
@@ -94,9 +97,17 @@ def _run_collection(job_id: str, app_name: str, use_llm: bool) -> None:
         review_count = database.save_reviews(reviews)
 
         sentiment_summary = sentiment.score_all_reviews(app_id, use_llm=use_llm)
-        kw_result         = keyword_analysis.run_keyword_analysis(app_id, use_llm=use_llm)
+        kw_result         = keyword_analysis.run_keyword_analysis(
+            app_id, use_llm=use_llm, seed_keywords=seed_keywords
+        )
         rank_tracker.take_snapshot(app_id, seed_keywords)
         rank_tracker.compute_all_velocities(app_id)
+
+        seed_warning = (
+            "LLM seed generation was unavailable (model busy) — used generic "
+            "category seeds instead, so competitor/keyword results may be less relevant."
+            if (use_llm and not used_llm_seeds) else None
+        )
 
         logger.info(f"Collection complete for {app_data['name']}")
         _jobs[job_id] = {
@@ -108,6 +119,7 @@ def _run_collection(job_id: str, app_name: str, use_llm: bool) -> None:
                 "keywords_found": len(kw_result.get("top_keywords", [])),
                 "gaps_found":     len(kw_result.get("gaps", [])),
                 "sentiment":      sentiment_summary,
+                "seed_warning":   seed_warning,
                 "collected_at":   collected_at,
             },
         }

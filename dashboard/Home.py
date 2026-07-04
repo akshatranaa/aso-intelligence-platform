@@ -65,6 +65,12 @@ with left:
                 if result:
                     st.session_state.app_id   = result["app_id"]
                     st.session_state.app_name = result["app_name"]
+                    # Remember any seed-fallback warning, keyed by app_id, so the
+                    # affected pages can surface it too.
+                    st.session_state.setdefault("seed_warnings", {})
+                    st.session_state.seed_warnings[result["app_id"]] = result.get("seed_warning")
+                    if result.get("seed_warning"):
+                        st.warning(f"⚠️ {result['seed_warning']}")
                     st.success(f"✅ Collection complete for **{result['app_name']}**")
                     st.json({
                         "App ID":         result["app_id"],

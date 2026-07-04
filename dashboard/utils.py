@@ -119,6 +119,18 @@ def priority_badge(priority: str) -> str:
     }.get(priority, priority.upper())
 
 
+def seed_warning_banner(app_id: int) -> None:
+    """
+    Show the LLM seed-fallback warning for an app, if one was recorded.
+
+    Args:
+        app_id: The currently loaded app's ID.
+    """
+    warning = st.session_state.get("seed_warnings", {}).get(app_id)
+    if warning:
+        st.warning(f"⚠️ {warning}")
+
+
 def require_app_id() -> int | None:
     """
     Check session state for app_id and show a warning if missing.

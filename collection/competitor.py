@@ -1,35 +1,29 @@
-"""Discovers and scores competitor apps using scored BFS."""
+"""Discovers competitor apps via keyword search, gated by an LLM relevance judge."""
 
 from __future__ import annotations
 
 import logging
-from collections import deque
 
 import config
 import database
+from analysis import llm_analyst
 from collection import scraper
 
 logger = logging.getLogger(__name__)
 
 
-def calculate_competitor_score(
-    app_data: dict,
-    target_keywords: list[str],
-    target_category: str,
-    keyword_overlap: float | None = None,
-) -> float:
+def calculate_competitor_score(app_data: dict) -> float:
     """
-    Score how strongly this app competes with the target app.
+    Score a competitor's strength by popularity and quality.
+
+    Relevance is decided upstream by the LLM judge, so the score only ranks
+    already-relevant competitors (popular, well-rated → higher) for tiering.
 
     Args:
-        app_data:        App metadata dict from scraper.
-        target_keywords: Keywords the target app targets.
-        target_category: Primary genre of the target app.
-        keyword_overlap: Precomputed overlap to reuse (avoids re-hitting the
-                         API); computed here if not supplied.
+        app_data: App metadata dict with rating_count and avg_rating.
 
     Returns:
-        Float in [0.0, 1.0] representing competitive strength.
+        Float in [0.0, 1.0].
     """
     rating_count = app_data.get("rating_count") or 0
     rating_count_score = min(rating_count / 1_000_000, 1.0)
@@ -37,59 +31,30 @@ def calculate_competitor_score(
     avg_rating = app_data.get("avg_rating") or 0
     avg_rating_score = (avg_rating - 1) / 4 if avg_rating else 0.0
 
-    category_match = 1.0 if app_data.get("category") == target_category else 0.0
-
-    if keyword_overlap is None:
-        keyword_overlap = _compute_keyword_overlap(app_data["app_id"], target_keywords)
-
     w = config.COMPETITOR_WEIGHTS
-    final_score = (
-        rating_count_score * w["rating_count"]
-        + avg_rating_score * w["avg_rating"]
-        + keyword_overlap  * w["keyword_overlap"]
-        + category_match   * w["category_match"]
-    )
+    final_score = rating_count_score * w["rating_count"] + avg_rating_score * w["avg_rating"]
     return round(final_score, 4)
 
 
-def _compute_keyword_overlap(app_id: int, target_keywords: list[str]) -> float:
+def assign_tier(score: float, same_category: bool = True) -> str:
     """
-    Return fraction of target_keywords for which this app ranks in results.
+    Split judged competitors into tier1 (big + same-category) and tier2.
+
+    Tier1 is reserved for popular competitors in the target's own category, so a
+    huge but off-category app the judge kept (e.g. YouTube for a music app) is
+    demoted to tier2 rather than headlining the list.
 
     Args:
-        app_id:          iTunes app ID to probe.
-        target_keywords: Keywords to check against.
+        score:         Popularity score in [0.0, 1.0].
+        same_category: Whether the app shares the target's primary category.
 
     Returns:
-        Float in [0.0, 1.0], or 0.0 if target_keywords is empty.
+        "tier1" if same_category and score >= TIER_1_THRESHOLD, else "tier2".
+        Never None — every LLM-judged competitor is kept.
     """
-    if not target_keywords:
-        return 0.0
-    ranked = sum(
-        1
-        for kw in target_keywords
-        if scraper.fetch_keyword_ranking(kw, app_id) is not None
-    )
-    return ranked / len(target_keywords)
-
-
-def assign_tier(score: float) -> str | None:
-    """
-    Convert a competitor score to a tier label.
-
-    Args:
-        score: Competitor score in [0.0, 1.0].
-
-    Returns:
-        "tier1" if score >= TIER_1_THRESHOLD,
-        "tier2" if score >= TIER_2_THRESHOLD,
-        None otherwise.
-    """
-    if score >= config.TIER_1_THRESHOLD:
+    if same_category and score >= config.TIER_1_THRESHOLD:
         return "tier1"
-    if score >= config.TIER_2_THRESHOLD:
-        return "tier2"
-    return None
+    return "tier2"
 
 
 def _build_entry(app_data: dict, score: float, tier: str) -> dict:
@@ -105,32 +70,51 @@ def _build_entry(app_data: dict, score: float, tier: str) -> dict:
     }
 
 
-def _enqueue_neighbours(
-    current_id: int,
-    target_keywords: list[str],
-    depth: int,
-    queue: deque,
-) -> None:
-    """Push keyword-search neighbour app IDs onto the BFS queue."""
+def _gather_candidates(target_app_id: int, target_keywords: list[str]) -> list[dict]:
+    """
+    Collect candidate apps from the seed-keyword searches (deduped, no target).
+
+    Args:
+        target_app_id:   The app being analysed (excluded from results).
+        target_keywords: Seed keywords defining the competitive space.
+
+    Returns:
+        List of candidate app metadata dicts.
+    """
+    candidate_ids: set[int] = set()
     for keyword in target_keywords:
         for app_id in scraper.fetch_keyword_apps(keyword):
-            queue.append((app_id, depth + 1))
+            if app_id != target_app_id:
+                candidate_ids.add(app_id)
+
+    candidates: list[dict] = []
+    for app_id in candidate_ids:
+        app_data = database.get_app(app_id) or scraper.fetch_app_by_id(app_id)
+        if app_data:
+            candidates.append(app_data)
+    return candidates
 
 
 def discover_competitors(
     target_app_id: int,
     target_keywords: list[str],
-    max_depth: int = 2,
+    max_depth: int = 1,
+    use_llm: bool = True,
 ) -> list[dict]:
     """
-    Perform scored BFS from the target app to discover competitor apps.
+    Discover competitor apps for a target and gate them by relevance.
 
-    Only apps scoring at or above the tier2 threshold are expanded further.
+    Candidates come from the seed-keyword searches. An LLM judge then keeps only
+    genuine competitors (seed-independent, so generic seeds don't leak junk). When
+    use_llm is False, it falls back to a same-category filter. Judged competitors
+    are scored by popularity, tiered, and saved scoped to the target.
 
     Args:
         target_app_id:   iTunes ID of the app to find competitors for.
         target_keywords: Seed keywords defining the competitive space.
-        max_depth:       BFS depth limit (default 2).
+        max_depth:       Unused (kept for signature compatibility) — the keyword
+                         searches already surface the full candidate set.
+        use_llm:         Whether to use the LLM relevance judge.
 
     Returns:
         List of competitor dicts sorted by score descending.
@@ -139,54 +123,32 @@ def discover_competitors(
     if target_data is None:
         logger.error(f"Could not fetch target app {target_app_id}")
         return []
-    target_category = target_data["category"]
+    target_category = target_data.get("category")
 
-    queue: deque[tuple[int, int]] = deque([(target_app_id, 0)])
-    visited: set[int] = set()
+    candidates = _gather_candidates(target_app_id, target_keywords)
+    if not candidates:
+        return []
+
+    if use_llm:
+        keep_ids = llm_analyst.judge_competitors(target_data, candidates, use_llm=True)
+    else:
+        # No-LLM fallback: keep only same-category apps (coarse but avoids
+        # cross-category junk without an API call).
+        target_category = target_data.get("category")
+        keep_ids = {c["app_id"] for c in candidates if c.get("category") == target_category}
+
+    logger.info(f"Competitor judge kept {len(keep_ids)}/{len(candidates)} candidates")
+
     competitors: list[dict] = []
-
-    while queue:
-        current_id, depth = queue.popleft()
-
-        if current_id in visited:
+    for app_data in candidates:
+        if app_data["app_id"] not in keep_ids:
             continue
-        visited.add(current_id)
-
-        if current_id == target_app_id:
-            if depth < max_depth:
-                _enqueue_neighbours(current_id, target_keywords, depth, queue)
-            continue
-
-        app_data = scraper.fetch_app_by_id(current_id)
-        if app_data is None:
-            continue
-
-        # Relevance gate: an app in a different category must still rank for a
-        # meaningful share of the seed keywords. This stops hugely popular but
-        # unrelated apps (ChatGPT, Calculator) from qualifying on popularity alone.
-        category_match  = app_data.get("category") == target_category
-        keyword_overlap = _compute_keyword_overlap(app_data["app_id"], target_keywords)
-        if not category_match and keyword_overlap < config.MIN_COMPETITOR_OVERLAP:
-            logger.info(
-                f"App {current_id} failed relevance gate "
-                f"(overlap={keyword_overlap:.2f}, diff category) — skipping"
-            )
-            continue
-
-        score = calculate_competitor_score(
-            app_data, target_keywords, target_category, keyword_overlap=keyword_overlap
-        )
-        tier = assign_tier(score)
-
-        if tier is not None:
-            app_data["competitor_score"] = score
-            app_data["competitor_tier"] = tier
-            database.save_app(app_data)
-            database.save_competitor(target_app_id, app_data["app_id"], tier, score)
-            competitors.append(_build_entry(app_data, score, tier))
-            if depth < max_depth:
-                _enqueue_neighbours(current_id, target_keywords, depth, queue)
-        else:
-            logger.info(f"App {current_id} scored {score:.4f} — below tier2 threshold")
+        score = calculate_competitor_score(app_data)
+        tier = assign_tier(score, same_category=(app_data.get("category") == target_category))
+        app_data["competitor_score"] = score
+        app_data["competitor_tier"] = tier
+        database.save_app(app_data)
+        database.save_competitor(target_app_id, app_data["app_id"], tier, score)
+        competitors.append(_build_entry(app_data, score, tier))
 
     return sorted(competitors, key=lambda x: x["score"], reverse=True)

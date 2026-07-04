@@ -39,12 +39,12 @@ def main() -> None:
     logger.info(f"Target app saved: {app_data['name']} ({target_app_id})")
 
     # Step 5 — seed keywords derived from the target app itself
-    seed_keywords = keyword_analysis.derive_seed_keywords(app_data)
+    seed_keywords, _ = keyword_analysis.derive_seed_keywords(app_data)
     logger.info(f"Derived seed keywords: {seed_keywords}")
 
     # Step 6 — discover competitors
     logger.info("Discovering competitors...")
-    competitors = competitor.discover_competitors(target_app_id, seed_keywords, max_depth=2)
+    competitors = competitor.discover_competitors(target_app_id, seed_keywords, use_llm=False)
     tier1 = sum(1 for c in competitors if c["tier"] == "tier1")
     tier2 = sum(1 for c in competitors if c["tier"] == "tier2")
     logger.info(f"Found {len(competitors)} competitors ({tier1} tier1, {tier2} tier2)")
