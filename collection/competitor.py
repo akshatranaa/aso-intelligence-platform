@@ -133,6 +133,11 @@ def discover_competitors(
 
     if use_llm:
         keep_ids = llm_analyst.judge_competitors(target_data, candidates, use_llm=True)
+        if keep_ids is None:
+            raise RuntimeError(
+                "AI API quota exhausted (free-tier tokens finished) — competitor "
+                "analysis needs it. Please try again in a few minutes."
+            )
     else:
         # No-LLM fallback: keep only same-category apps (coarse but avoids
         # cross-category junk without an API call).

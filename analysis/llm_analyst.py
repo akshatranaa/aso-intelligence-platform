@@ -144,7 +144,9 @@ Example: ["vpn", "secure vpn", "wifi proxy", "unblock sites"]
     return seeds or None
 
 
-def judge_competitors(target_app: dict, candidates: list[dict], use_llm: bool = True) -> set[int]:
+def judge_competitors(
+    target_app: dict, candidates: list[dict], use_llm: bool = True
+) -> set[int] | None:
     """
     Classify which candidate apps are genuine competitors of the target.
 
@@ -159,11 +161,14 @@ def judge_competitors(target_app: dict, candidates: list[dict], use_llm: bool = 
         use_llm:    If False, return all candidate ids (no gating).
 
     Returns:
-        Set of competitor app_ids. On opt-out or LLM failure, returns all
-        candidate ids (never silently drops everyone).
+        Set of competitor app_ids on success (possibly empty). Returns None when
+        the LLM call fails (e.g. quota exhausted) so the caller can surface an
+        error instead of saving an ungated junk list.
     """
     all_ids = {c["app_id"] for c in candidates}
-    if not use_llm or not candidates:
+    if not candidates:
+        return set()
+    if not use_llm:
         return all_ids
 
     def _short(app):
@@ -189,8 +194,8 @@ Return only the JSON array of app_id integers.
 """
     result = _call_llm(prompt, expect_json=True)
     if not isinstance(result, list):
-        logger.warning("Competitor judge failed — keeping all candidates")
-        return all_ids
+        logger.warning("Competitor judge LLM call failed — signalling error")
+        return None
     judged = set()
     for x in result:
         try:
@@ -198,8 +203,7 @@ Return only the JSON array of app_id integers.
         except (TypeError, ValueError):
             continue
     # Only trust ids that were actually in the candidate set.
-    judged &= all_ids
-    return judged or all_ids
+    return judged & all_ids
 
 
 def analyse_reviews(reviews: list[dict], use_llm: bool = True) -> dict | None:
