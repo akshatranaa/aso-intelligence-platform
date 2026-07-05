@@ -1,4 +1,4 @@
-"""Owns all LLM API calls (via Google Gemini). No other module calls the API directly."""
+"""Owns all LLM API calls (via Groq). No other module calls the API directly."""
 
 from __future__ import annotations
 
@@ -22,12 +22,12 @@ _RETRYABLE_STATUS = {429, 500, 502, 503, 529}
 
 def _call_llm(prompt: str, expect_json: bool = False) -> dict | list | str | None:
     """
-    Central function that makes every LLM API call, via Google Gemini.
+    Central function that makes every LLM API call, via Groq.
 
-    Retries up to config.LLM_MAX_RETRIES times on transient errors
-    (rate limits, upstream unavailability, timeouts) with exponential
-    backoff. Non-transient failures (bad key, bad request, JSON parse)
-    are not retried.
+    Uses Groq's OpenAI-compatible chat-completions endpoint. Retries up to
+    config.LLM_MAX_RETRIES times on transient errors (rate limits, upstream
+    unavailability, timeouts) with exponential backoff. Non-transient failures
+    (bad key, bad request, JSON parse) are not retried.
 
     Args:
         prompt:      Full prompt string to send.
@@ -37,24 +37,26 @@ def _call_llm(prompt: str, expect_json: bool = False) -> dict | list | str | Non
         Parsed JSON dict/list if expect_json=True, raw string otherwise,
         or None if the call ultimately fails or the JSON parse fails.
     """
-    api_key = os.environ.get("GEMINI_API_KEY")
+    api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
-        logger.error("GEMINI_API_KEY not set — skipping LLM call")
+        logger.error("GROQ_API_KEY not set — skipping LLM call")
         return None
 
-    url = f"{config.GEMINI_BASE_URL}/{config.LLM_MODEL}:generateContent"
+    url = config.GROQ_BASE_URL
     text = None
     for attempt in range(config.LLM_MAX_RETRIES + 1):
         try:
             response = httpx.post(
                 url,
-                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
                 json={
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {
-                        "maxOutputTokens": config.LLM_MAX_TOKENS,
-                        "temperature": 0,
-                    },
+                    "model": config.LLM_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": config.LLM_MAX_TOKENS,
+                    "temperature": 0,
                 },
                 timeout=60.0,
             )
@@ -67,9 +69,8 @@ def _call_llm(prompt: str, expect_json: bool = False) -> dict | list | str | Non
                 time.sleep(wait)
                 continue
             response.raise_for_status()
-            candidates = response.json().get("candidates", [])
-            parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
-            text = parts[0].get("text") if parts else None
+            choices = response.json().get("choices", [])
+            text = choices[0].get("message", {}).get("content") if choices else None
             break
         except httpx.RequestError as e:
             # Network/timeout error — retry if attempts remain, else give up.
@@ -172,10 +173,11 @@ def judge_competitors(
         return all_ids
 
     def _short(app):
-        return (app.get("description") or "")[:200].replace("\n", " ")
+        return (app.get("description") or "")[:120].replace("\n", " ")
 
     listing = "\n".join(
-        f'{c["app_id"]}: {c.get("name","")} — {_short(c)}' for c in candidates
+        f'{c["app_id"]}: {c.get("name","")} [{c.get("category","")}] — {_short(c)}'
+        for c in candidates
     )
     prompt = f"""
 You are an App Store competitive-analysis expert.

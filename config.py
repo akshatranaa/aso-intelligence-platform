@@ -62,9 +62,12 @@ RANK_COMPETITOR_COMPARE_MAX = 5
 LOG_LEVEL  = "INFO"
 LOG_FORMAT = "%(asctime)s — %(name)s — %(levelname)s — %(message)s"
 
-# LLM settings — served via Google Gemini (generateContent REST API)
-GEMINI_BASE_URL       = "https://generativelanguage.googleapis.com/v1beta/models"
-LLM_MODEL             = "gemini-2.5-flash-lite"  # gemini-2.0-flash is free-tier limit-0
+# LLM settings — served via Groq (OpenAI-compatible chat completions API).
+# Groq's free tier has far higher request/day limits than Gemini's; the small
+# 8B model is plenty for this workload (JSON classification + short summaries).
+# Bump to "llama-3.3-70b-versatile" for better quality at a lower daily cap.
+GROQ_BASE_URL         = "https://api.groq.com/openai/v1/chat/completions"
+LLM_MODEL             = "llama-3.1-8b-instant"
 LLM_MAX_TOKENS        = 1024  # per-call output cap (conserves free quota)
 LLM_MAX_RETRIES       = 2     # retries on transient errors (429/503/timeout)
 LLM_REVIEW_BATCH_SIZE = 20
