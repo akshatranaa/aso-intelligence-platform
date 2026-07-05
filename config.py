@@ -55,6 +55,8 @@ N_REVIEW_CLUSTERS  = 5
 # Rank tracking
 RANK_ALERT_THRESHOLD = 5
 RANK_VELOCITY_DAYS   = 7
+# Max competitors to look up in an on-demand per-keyword rank comparison.
+RANK_COMPETITOR_COMPARE_MAX = 5
 
 # Logging
 LOG_LEVEL  = "INFO"

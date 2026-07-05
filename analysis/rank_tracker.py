@@ -27,11 +27,49 @@ def take_snapshot(app_id: int, keywords: list[str]) -> dict:
     snapshot = {}
     for keyword in keywords:
         rank = scraper.fetch_keyword_ranking(keyword, app_id)
-        if rank is not None:
-            database.save_ranking(app_id, keyword, rank, today)
+        # Persist every keyword — a NULL-rank row keeps a tracked-but-unranked
+        # keyword visible ("Unranked") instead of silently disappearing.
+        database.save_ranking(app_id, keyword, rank, today)
         snapshot[keyword] = rank
         logger.info(f"Snapshot '{keyword}': rank={rank}")
     return snapshot
+
+
+def track_keyword(app_id: int, keyword: str) -> list[dict]:
+    """
+    Snapshot a single (typically user-added) keyword and return the summary.
+
+    Args:
+        app_id:  iTunes app ID of the target app.
+        keyword: Keyword to start tracking.
+
+    Returns:
+        The refreshed ranking summary for the app (one row per tracked keyword).
+    """
+    take_snapshot(app_id, [keyword])
+    return get_ranking_summary(app_id)
+
+
+def refresh_rankings(app_id: int) -> list[dict]:
+    """
+    Re-snapshot every keyword already tracked for an app, without a full collect.
+
+    This is the rankings-only slice of a collection run (no metadata, competitor,
+    review, or sentiment work), so it returns quickly enough to run synchronously.
+
+    Args:
+        app_id: iTunes app ID of the target app.
+
+    Returns:
+        The refreshed ranking summary after re-snapshotting and recomputing velocity.
+    """
+    tracked = list(dict.fromkeys(
+        row["keyword"] for row in database.get_all_rankings(app_id)
+    ))
+    take_snapshot(app_id, tracked)
+    compute_all_velocities(app_id)
+    logger.info(f"Refreshed rankings for {len(tracked)} keywords (app {app_id})")
+    return get_ranking_summary(app_id)
 
 
 def compute_velocity(app_id: int, keyword: str) -> float | None:
@@ -117,6 +155,58 @@ def detect_significant_changes(app_id: int, keywords: list[str]) -> list[dict]:
             f"({'+' if delta > 0 else ''}{delta})"
         )
     return alerts
+
+
+def compare_competitor_ranks(
+    app_id: int,
+    keyword: str,
+    max_competitors: int = config.RANK_COMPETITOR_COMPARE_MAX,
+) -> dict:
+    """
+    Compare the target's rank for a keyword against its top competitors.
+
+    Live iTunes lookups — one for the target plus one per competitor (capped at
+    max_competitors, highest competitor_score first). Rate-limited, so ~1+N seconds.
+
+    Args:
+        app_id:          iTunes app ID of the target app.
+        keyword:         Keyword to compare ranks for.
+        max_competitors: Maximum number of competitors to look up.
+
+    Returns:
+        Dict with keyword, the target {name, rank}, and a competitors list of
+        {name, app_id, rank} sorted by rank ascending (unranked/None last).
+    """
+    target_app = database.get_app(app_id)
+    target_name = target_app["name"] if target_app else str(app_id)
+    target_rank = scraper.fetch_keyword_ranking(keyword, app_id)
+
+    competitors = sorted(
+        database.get_competitors(app_id),
+        key=lambda c: c.get("competitor_score") or 0.0,
+        reverse=True,
+    )[:max_competitors]
+
+    comp_results = []
+    for comp in competitors:
+        rank = scraper.fetch_keyword_ranking(keyword, comp["app_id"])
+        comp_results.append({
+            "name":   comp.get("name", str(comp["app_id"])),
+            "app_id": comp["app_id"],
+            "rank":   rank,
+        })
+
+    # Sort by rank, pushing unranked (None) to the end.
+    comp_results.sort(key=lambda c: (c["rank"] is None, c["rank"] or 0))
+    logger.info(
+        f"Compared '{keyword}' ranks: target={target_rank}, "
+        f"{len(comp_results)} competitors"
+    )
+    return {
+        "keyword":     keyword,
+        "target":      {"name": target_name, "rank": target_rank},
+        "competitors": comp_results,
+    }
 
 
 def get_ranking_summary(app_id: int) -> list[dict]:

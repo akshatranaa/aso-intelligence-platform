@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import uuid
-from datetime import date, datetime
+from datetime import datetime
 from typing import Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import config
 import database
-from analysis import keyword_analysis, rank_tracker, recommendations, sentiment
+from analysis import rank_tracker, recommendations, seeds, sentiment
 from collection import competitor, scraper
 
 logging.basicConfig(level=config.LOG_LEVEL, format=config.LOG_FORMAT)
@@ -76,18 +76,12 @@ def _run_collection(job_id: str, app_name: str, use_llm: bool) -> None:
         database.save_app(app_data)
         app_id = app_data["app_id"]
         # Derive seeds once and reuse everywhere (one LLM call, consistent status).
-        seed_keywords, used_llm_seeds = keyword_analysis.derive_seed_keywords(
+        seed_keywords, used_llm_seeds = seeds.derive_seed_keywords(
             app_data, use_llm=use_llm
         )
         logger.info(f"Collecting data for {app_data['name']} ({app_id})")
 
         competitor.discover_competitors(app_id, seed_keywords, use_llm=use_llm)
-
-        today = str(date.today())
-        for keyword in seed_keywords:
-            rank = scraper.fetch_keyword_ranking(keyword, app_id)
-            if rank:
-                database.save_ranking(app_id, keyword, rank, today)
 
         reviews = scraper.fetch_reviews(app_id)
         collected_at = datetime.now().isoformat()
@@ -97,15 +91,19 @@ def _run_collection(job_id: str, app_name: str, use_llm: bool) -> None:
         review_count = database.save_reviews(reviews)
 
         sentiment_summary = sentiment.score_all_reviews(app_id, use_llm=use_llm)
-        kw_result         = keyword_analysis.run_keyword_analysis(
-            app_id, use_llm=use_llm, seed_keywords=seed_keywords
-        )
-        rank_tracker.take_snapshot(app_id, seed_keywords)
+
+        # Rank-track the seed keywords plus any keyword already tracked for this
+        # app (custom-added keywords keep refreshing so velocity can accumulate).
+        tracked = list(dict.fromkeys(
+            list(seed_keywords)
+            + [row["keyword"] for row in database.get_all_rankings(app_id)]
+        ))
+        rank_tracker.take_snapshot(app_id, tracked)
         rank_tracker.compute_all_velocities(app_id)
 
         seed_warning = (
             "LLM seed generation was unavailable (model busy) — used generic "
-            "category seeds instead, so competitor/keyword results may be less relevant."
+            "category seeds instead, so competitor results may be less relevant."
             if (use_llm and not used_llm_seeds) else None
         )
 
@@ -113,14 +111,13 @@ def _run_collection(job_id: str, app_name: str, use_llm: bool) -> None:
         _jobs[job_id] = {
             "status": "done",
             "result": {
-                "app_id":         app_id,
-                "app_name":       app_data["name"],
-                "reviews_saved":  review_count,
-                "keywords_found": len(kw_result.get("top_keywords", [])),
-                "gaps_found":     len(kw_result.get("gaps", [])),
-                "sentiment":      sentiment_summary,
-                "seed_warning":   seed_warning,
-                "collected_at":   collected_at,
+                "app_id":           app_id,
+                "app_name":         app_data["name"],
+                "reviews_saved":    review_count,
+                "keywords_tracked": len(tracked),
+                "sentiment":        sentiment_summary,
+                "seed_warning":     seed_warning,
+                "collected_at":     collected_at,
             },
         }
     except Exception as e:
@@ -197,32 +194,6 @@ def get_sentiment(app_id: int) -> dict:
     return summary
 
 
-@app.get("/app/{app_id}/keywords")
-def get_keywords(app_id: int, k: int = config.TOP_K_KEYWORDS) -> dict:
-    """
-    Fetch top keywords by opportunity score for an app.
-
-    Args:
-        app_id: iTunes numeric app ID.
-        k:      Number of top keywords to return (query param, default 20).
-
-    Returns:
-        Dict with top_keywords and gap_keywords lists.
-    """
-    if not database.get_app(app_id):
-        raise HTTPException(status_code=404, detail=f"App {app_id} not found")
-    top_keywords = keyword_analysis.get_top_k_keywords(app_id, k=k)
-    gap_keywords = [
-        kw for kw in database.get_keywords(app_id)
-        if kw.get("is_gap_keyword")
-    ]
-    return {
-        "app_id":       app_id,
-        "top_keywords": top_keywords,
-        "gap_keywords": gap_keywords,
-    }
-
-
 @app.get("/app/{app_id}/rankings")
 def get_rankings(app_id: int) -> dict:
     """
@@ -238,6 +209,69 @@ def get_rankings(app_id: int) -> dict:
         raise HTTPException(status_code=404, detail=f"App {app_id} not found")
     summary = rank_tracker.get_ranking_summary(app_id)
     return {"app_id": app_id, "total": len(summary), "rankings": summary}
+
+
+@app.post("/app/{app_id}/rankings/track", dependencies=[Depends(verify_api_key)])
+def track_keyword(app_id: int, keyword: str) -> dict:
+    """
+    Start rank-tracking a custom keyword for an app (one live snapshot).
+
+    Args:
+        app_id:  iTunes numeric app ID.
+        keyword: Keyword to begin tracking (query param).
+
+    Returns:
+        The refreshed ranking summary including the new keyword.
+    """
+    if not database.get_app(app_id):
+        raise HTTPException(status_code=404, detail=f"App {app_id} not found")
+    keyword = keyword.strip()
+    if not keyword:
+        raise HTTPException(status_code=400, detail="keyword must not be empty")
+    summary = rank_tracker.track_keyword(app_id, keyword)
+    return {"app_id": app_id, "total": len(summary), "rankings": summary}
+
+
+@app.post("/app/{app_id}/rankings/refresh", dependencies=[Depends(verify_api_key)])
+def refresh_rankings(app_id: int) -> dict:
+    """
+    Re-snapshot every tracked keyword for an app without a full collection.
+
+    Rankings-only (no metadata/competitor/review/sentiment work), so it runs
+    synchronously and returns the updated summary.
+
+    Args:
+        app_id: iTunes numeric app ID.
+
+    Returns:
+        The refreshed ranking summary after re-snapshotting and recomputing velocity.
+    """
+    if not database.get_app(app_id):
+        raise HTTPException(status_code=404, detail=f"App {app_id} not found")
+    summary = rank_tracker.refresh_rankings(app_id)
+    return {"app_id": app_id, "total": len(summary), "rankings": summary}
+
+
+@app.get("/app/{app_id}/rankings/compare")
+def compare_competitor_ranks(app_id: int, keyword: str) -> dict:
+    """
+    Compare where the target and its top competitors rank for one keyword.
+
+    Live iTunes lookups (one per app), so this is bounded and on-demand.
+
+    Args:
+        app_id:  iTunes numeric app ID of the target app.
+        keyword: Keyword to compare ranks for (query param).
+
+    Returns:
+        Dict with the keyword, the target's rank, and each competitor's rank.
+    """
+    if not database.get_app(app_id):
+        raise HTTPException(status_code=404, detail=f"App {app_id} not found")
+    keyword = keyword.strip()
+    if not keyword:
+        raise HTTPException(status_code=400, detail="keyword must not be empty")
+    return rank_tracker.compare_competitor_ranks(app_id, keyword)
 
 
 @app.get("/app/{app_id}/competitors")

@@ -50,18 +50,19 @@ def _error_detail(response: requests.Response) -> str:
         return response.text[:200] or "(empty response — server may have restarted)"
 
 
-def api_get(endpoint: str) -> dict | list | None:
+def api_get(endpoint: str, params: dict | None = None) -> dict | list | None:
     """
     Make a GET request to the FastAPI server.
 
     Args:
         endpoint: URL path starting with /
+        params:   Optional query parameters.
 
     Returns:
         Parsed JSON response, or None on failure.
     """
     try:
-        response = requests.get(f"{API_BASE}{endpoint}", timeout=15)
+        response = requests.get(f"{API_BASE}{endpoint}", params=params, timeout=60)
         response.raise_for_status()
         return response.json()
     except requests.ConnectionError:
@@ -75,18 +76,21 @@ def api_get(endpoint: str) -> dict | list | None:
         return None
 
 
-def api_post(endpoint: str) -> dict | None:
+def api_post(endpoint: str, params: dict | None = None) -> dict | None:
     """
     Make a POST request to the FastAPI server.
 
     Args:
         endpoint: URL path starting with /
+        params:   Optional query parameters.
 
     Returns:
         Parsed JSON response, or None on failure.
     """
     try:
-        response = requests.post(f"{API_BASE}{endpoint}", headers=_API_HEADERS, timeout=900)
+        response = requests.post(
+            f"{API_BASE}{endpoint}", params=params, headers=_API_HEADERS, timeout=900
+        )
         response.raise_for_status()
         return response.json()
     except requests.ConnectionError:

@@ -6,7 +6,7 @@ from datetime import date, datetime
 
 import config
 import database
-from analysis import keyword_analysis, rank_tracker, sentiment
+from analysis import rank_tracker, seeds, sentiment
 from collection import competitor
 from collection import scraper
 
@@ -39,7 +39,7 @@ def main() -> None:
     logger.info(f"Target app saved: {app_data['name']} ({target_app_id})")
 
     # Step 5 — seed keywords derived from the target app itself
-    seed_keywords, _ = keyword_analysis.derive_seed_keywords(app_data)
+    seed_keywords, _ = seeds.derive_seed_keywords(app_data)
     logger.info(f"Derived seed keywords: {seed_keywords}")
 
     # Step 6 — discover competitors
@@ -83,15 +83,7 @@ def main() -> None:
         f"{sentiment_summary['neutral_pct']}% neutral"
     )
 
-    # Step 11 — keyword analysis
-    logger.info("Running keyword analysis...")
-    kw_result = keyword_analysis.run_keyword_analysis(target_app_id, use_llm=False)
-    logger.info(
-        f"Keywords: {len(kw_result['top_keywords'])} scored, "
-        f"{len(kw_result['gaps'])} gaps found"
-    )
-
-    # Step 12 — rank tracking
+    # Step 11 — rank tracking
     logger.info("Running rank tracker...")
     rank_tracker.take_snapshot(target_app_id, seed_keywords)
     rank_tracker.compute_all_velocities(target_app_id)

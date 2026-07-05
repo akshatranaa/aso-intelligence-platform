@@ -73,10 +73,9 @@ with left:
                         st.warning(f"⚠️ {result['seed_warning']}")
                     st.success(f"✅ Collection complete for **{result['app_name']}**")
                     st.json({
-                        "App ID":         result["app_id"],
-                        "Reviews saved":  result["reviews_saved"],
-                        "Keywords found": result["keywords_found"],
-                        "Gaps found":     result["gaps_found"],
+                        "App ID":           result["app_id"],
+                        "Reviews saved":    result["reviews_saved"],
+                        "Keywords tracked": result["keywords_tracked"],
                     })
 
 with right:
@@ -107,6 +106,6 @@ if st.session_state.app_id:
         c3.metric("Rating Count", f"{app_data.get('rating_count', 0):,}")
         c4.metric("Category",     app_data.get("category", "N/A"))
 
-        st.info("Use the sidebar to navigate to Sentiment, Keywords, Rankings, Competitors, and Recommendations.")
+        st.info("Use the sidebar to navigate to Sentiment, Rankings, Competitors, and Recommendations.")
 else:
     st.info("Enter an app name above to collect data, or enter an App ID to load existing data.")

@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import streamlit as st
 import plotly.express as px
 import pandas as pd
-from utils import api_get, trend_badge, require_app_id
+from utils import api_get, api_post, trend_badge, require_app_id
 
 st.set_page_config(page_title="Rankings", page_icon="📈", layout="wide")
 st.title("📈 Keyword Rankings")
@@ -17,13 +17,46 @@ if not app_id:
     st.stop()
 
 data = api_get(f"/app/{app_id}/rankings")
-if not data:
+if data is None:
     st.stop()
 
 rankings = data.get("rankings", [])
 
+# ── Actions: track a keyword / refresh all ────────────────────────────────────
+ac1, ac2 = st.columns([3, 1])
+with ac1:
+    new_kw = st.text_input(
+        "Track a new keyword",
+        placeholder="e.g. secure vpn",
+        key="track_kw",
+        label_visibility="collapsed",
+    )
+with ac2:
+    if st.button("➕ Track keyword", use_container_width=True):
+        kw = new_kw.strip()
+        if not kw:
+            st.warning("Enter a keyword to track.")
+        else:
+            with st.spinner(f"Fetching rank for '{kw}'…"):
+                res = api_post(f"/app/{app_id}/rankings/track", params={"keyword": kw})
+            if res:
+                st.success(f"Now tracking '{kw}'.")
+                st.rerun()
+
+if st.button(
+    "🔄 Re-run ranking analysis",
+    help="Re-check ranks for every tracked keyword — no full collection needed.",
+):
+    with st.spinner("Refreshing all tracked keyword ranks…"):
+        res = api_post(f"/app/{app_id}/rankings/refresh")
+    if res:
+        st.success("Rankings refreshed.")
+        st.rerun()
+
+st.divider()
+
 if not rankings:
-    st.info("No rankings data yet. Run collection first.")
+    st.info("No rankings yet. Track a keyword above, or run a collection from Home.")
     st.stop()
 
 # ── Summary metrics ───────────────────────────────────────────────────────────
@@ -49,11 +82,13 @@ if "trend" in df.columns:
     df["Trend"] = df["trend"].apply(trend_badge)
 
 if "delta" in df.columns:
-    df["Delta"] = df["delta"].apply(lambda d: f"{d:+d}" if d is not None else "N/A")
+    df["Delta"] = df["delta"].apply(
+        lambda d: f"{int(d):+d}" if pd.notna(d) else "N/A"
+    )
 
 if "velocity" in df.columns:
     df["Velocity"] = df["velocity"].apply(
-        lambda v: f"{v:+.2f}" if v is not None else "N/A"
+        lambda v: f"{v:+.2f}" if pd.notna(v) else "N/A"
     )
 
 # Sort: ranked first (ascending), then unranked
@@ -101,3 +136,52 @@ if not scatter_df.empty:
     fig.update_traces(textposition="top center")
     fig.update_layout(margin=dict(t=20))
     st.plotly_chart(fig, use_container_width=True)
+
+st.divider()
+
+# ── Competitor rank comparison ────────────────────────────────────────────────
+st.subheader("🆚 Competitor Rank Comparison")
+st.caption("See where your top competitors rank for a keyword (lower rank = better).")
+
+kw_options = [r["keyword"] for r in rankings]
+comp_col1, comp_col2 = st.columns([3, 1])
+with comp_col1:
+    sel_kw = st.selectbox("Keyword to compare", kw_options, label_visibility="collapsed")
+with comp_col2:
+    do_compare = st.button("Compare competitors", use_container_width=True)
+
+if do_compare and sel_kw:
+    with st.spinner(f"Looking up competitor ranks for '{sel_kw}'… (a few seconds)"):
+        cmp = api_get(f"/app/{app_id}/rankings/compare", params={"keyword": sel_kw})
+    if cmp:
+        rows = [{"App": f"{cmp['target']['name']} (you)", "Rank": cmp["target"]["rank"]}]
+        rows += [{"App": c["name"], "Rank": c["rank"]} for c in cmp["competitors"]]
+        cdf = pd.DataFrame(rows)
+        cdf["Rank label"] = cdf["Rank"].apply(
+            lambda r: f"#{int(r)}" if pd.notna(r) else "Unranked"
+        )
+
+        ranked_cmp = cdf[cdf["Rank"].notna()]
+        if not ranked_cmp.empty:
+            fig_c = px.bar(
+                ranked_cmp.sort_values("Rank"),
+                x="Rank",
+                y="App",
+                orientation="h",
+                text="Rank label",
+                title=f"Rank for '{sel_kw}' (shorter bar = better rank)",
+            )
+            fig_c.update_layout(
+                yaxis={"categoryorder": "total descending"},
+                showlegend=False,
+                margin=dict(t=40),
+            )
+            st.plotly_chart(fig_c, use_container_width=True)
+
+        st.dataframe(
+            cdf[["App", "Rank label"]].rename(columns={"Rank label": "Rank"}),
+            use_container_width=True,
+            hide_index=True,
+        )
+        if not cmp["competitors"]:
+            st.info("No competitors stored for this app yet — run a collection first.")

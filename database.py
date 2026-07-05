@@ -272,18 +272,26 @@ def save_reviews(reviews_list: list[dict]) -> int:
     return inserted_count
 
 
-def save_ranking(app_id: int, keyword: str, rank: int, date: str) -> None:
+def save_ranking(app_id: int, keyword: str, rank: int | None, date: str) -> None:
     """
     Insert one ranking row, computing rank_delta against the previous record.
+
+    A None rank (app not in the top results) is stored as a NULL row so an
+    explicitly tracked keyword still persists and shows as "Unranked" instead
+    of vanishing.
 
     Args:
         app_id:  iTunes numeric app ID.
         keyword: Keyword that was searched.
-        rank:    Position found (1-indexed; 1 = top result).
+        rank:    Position found (1-indexed; 1 = top result), or None if unranked.
         date:    Date string in YYYY-MM-DD format.
     """
     yesterday_rank = get_yesterday_rank(app_id, keyword)
-    rank_delta = (rank - yesterday_rank) if yesterday_rank is not None else None
+    rank_delta = (
+        rank - yesterday_rank
+        if rank is not None and yesterday_rank is not None
+        else None
+    )
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
