@@ -280,20 +280,40 @@ def save_ranking(app_id: int, keyword: str, rank: int | None, date: str) -> None
     explicitly tracked keyword still persists and shows as "Unranked" instead
     of vanishing.
 
+    Idempotent per day: any existing snapshot for the same date is replaced, so
+    re-collecting or hitting the refresh button multiple times a day updates
+    that day's row rather than appending duplicates.
+
     Args:
         app_id:  iTunes numeric app ID.
         keyword: Keyword that was searched.
         rank:    Position found (1-indexed; 1 = top result), or None if unranked.
         date:    Date string in YYYY-MM-DD format.
     """
-    yesterday_rank = get_yesterday_rank(app_id, keyword)
-    rank_delta = (
-        rank - yesterday_rank
-        if rank is not None and yesterday_rank is not None
-        else None
-    )
     with get_connection() as conn:
         cursor = conn.cursor()
+        # Replace any snapshot already recorded for this keyword today.
+        cursor.execute(
+            "DELETE FROM rankings WHERE app_id = %s AND keyword = %s AND date = %s",
+            (app_id, keyword, date),
+        )
+        # rank_delta is measured against the most recent earlier day (None when
+        # unranked, when there is no prior history, or when the last day was NULL).
+        cursor.execute(
+            """
+            SELECT rank FROM rankings
+            WHERE app_id = %s AND keyword = %s
+            ORDER BY date DESC LIMIT 1
+            """,
+            (app_id, keyword),
+        )
+        prev = cursor.fetchone()
+        yesterday_rank = prev["rank"] if prev else None
+        rank_delta = (
+            rank - yesterday_rank
+            if rank is not None and yesterday_rank is not None
+            else None
+        )
         cursor.execute(
             """
             INSERT INTO rankings (app_id, keyword, rank, date, rank_delta)

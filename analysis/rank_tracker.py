@@ -88,7 +88,9 @@ def compute_velocity(app_id: int, keyword: str) -> float | None:
         Mean rank delta over the last RANK_VELOCITY_DAYS days,
         or None if fewer than MIN_DAYS_FOR_VELOCITY rows exist.
     """
-    rows = database.get_rankings(app_id, keyword)
+    # Only ranked snapshots have a numeric position; skip NULL-rank rows
+    # (keyword tracked but app not in the top results that day).
+    rows = [r for r in database.get_rankings(app_id, keyword) if r["rank"] is not None]
     if len(rows) < config.MIN_DAYS_FOR_VELOCITY:
         return None
 
