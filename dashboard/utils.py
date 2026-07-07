@@ -104,6 +104,87 @@ def api_post(endpoint: str, params: dict | None = None) -> dict | None:
         return None
 
 
+# App Store storefronts offered in the country picker (code → label). The first
+# entry is the default and should match config.DEFAULT_COUNTRY on the backend.
+COUNTRIES: list[tuple[str, str]] = [
+    ("in", "🇮🇳 India"),
+    ("us", "🇺🇸 United States"),
+    ("gb", "🇬🇧 United Kingdom"),
+    ("ca", "🇨🇦 Canada"),
+    ("au", "🇦🇺 Australia"),
+    ("de", "🇩🇪 Germany"),
+    ("fr", "🇫🇷 France"),
+    ("es", "🇪🇸 Spain"),
+    ("it", "🇮🇹 Italy"),
+    ("nl", "🇳🇱 Netherlands"),
+    ("br", "🇧🇷 Brazil"),
+    ("mx", "🇲🇽 Mexico"),
+    ("jp", "🇯🇵 Japan"),
+    ("kr", "🇰🇷 South Korea"),
+    ("sg", "🇸🇬 Singapore"),
+    ("ae", "🇦🇪 United Arab Emirates"),
+]
+
+_COUNTRY_LABELS = dict(COUNTRIES)
+
+
+def country_label(code: str) -> str:
+    """Return the display label for a country code, falling back to the code."""
+    return _COUNTRY_LABELS.get((code or "").lower(), (code or "").upper())
+
+
+def country_selectbox(label: str, key: str, default: str | None = None) -> str:
+    """
+    Render a country picker and return the selected two-letter code.
+
+    Args:
+        label:   Label shown above the selectbox.
+        key:     Unique Streamlit widget key.
+        default: Country code to pre-select (defaults to the first entry).
+
+    Returns:
+        The selected two-letter country code.
+    """
+    codes = [c for c, _ in COUNTRIES]
+    index = codes.index(default) if default in codes else 0
+    return st.selectbox(
+        label,
+        codes,
+        index=index,
+        format_func=country_label,
+        key=key,
+    )
+
+
+def render_loading_overlay(placeholder, text: str) -> None:
+    """
+    Render a full-screen centered spinner overlay into a placeholder.
+
+    Used during long operations (e.g. Collect) so the user has clear, centered
+    feedback that the app is working. Call placeholder.empty() when done.
+
+    Args:
+        placeholder: An st.empty() container to render into.
+        text:        Status text shown under the spinner.
+    """
+    placeholder.markdown(
+        f"""
+        <div style="position:fixed;top:0;left:0;width:100vw;height:100vh;
+                    display:flex;flex-direction:column;align-items:center;
+                    justify-content:center;background:rgba(14,17,23,0.6);
+                    z-index:99999;">
+          <div style="width:72px;height:72px;border:7px solid rgba(255,255,255,0.25);
+                      border-top:7px solid #FF4B4B;border-radius:50%;
+                      animation:aso-spin 1s linear infinite;"></div>
+          <p style="margin-top:20px;color:#fff;font-size:1.05rem;font-weight:600;
+                    text-align:center;max-width:80vw;">{text}</p>
+        </div>
+        <style>@keyframes aso-spin {{ to {{ transform: rotate(360deg); }} }}</style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def trend_badge(trend: str) -> str:
     """Return a coloured emoji badge for a rank trend label."""
     return {

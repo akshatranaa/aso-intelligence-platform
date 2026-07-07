@@ -55,7 +55,9 @@ def verify_api_key(x_api_key: Optional[str] = Header(default=None)) -> None:
 _jobs: dict[str, dict] = {}
 
 
-def _run_collection(job_id: str, app_name: str, use_llm: bool) -> None:
+def _run_collection(
+    job_id: str, app_name: str, use_llm: bool, country: str = config.DEFAULT_COUNTRY
+) -> None:
     """
     Run the full collection pipeline and record its outcome in _jobs.
 
@@ -63,13 +65,17 @@ def _run_collection(job_id: str, app_name: str, use_llm: bool) -> None:
         job_id:   Unique ID for this job, used as the _jobs dict key.
         app_name: App name to search for on the App Store.
         use_llm:  Whether to use LLM during analysis steps.
+        country:  App Store country code to collect for.
     """
     try:
         database.create_tables()
 
-        app_data = scraper.fetch_app_metadata(app_name)
+        app_data = scraper.fetch_app_metadata(app_name, country)
         if not app_data:
-            _jobs[job_id] = {"status": "error", "detail": f"'{app_name}' not found on the App Store"}
+            _jobs[job_id] = {
+                "status": "error",
+                "detail": f"'{app_name}' not found on the {country.upper()} App Store",
+            }
             return
 
         app_data["is_target_app"] = 1
@@ -79,11 +85,11 @@ def _run_collection(job_id: str, app_name: str, use_llm: bool) -> None:
         seed_keywords, used_llm_seeds = seeds.derive_seed_keywords(
             app_data, use_llm=use_llm
         )
-        logger.info(f"Collecting data for {app_data['name']} ({app_id})")
+        logger.info(f"Collecting data for {app_data['name']} ({app_id}) [{country}]")
 
-        competitor.discover_competitors(app_id, seed_keywords, use_llm=use_llm)
+        competitor.discover_competitors(app_id, seed_keywords, use_llm=use_llm, country=country)
 
-        reviews = scraper.fetch_reviews(app_id)
+        reviews = scraper.fetch_reviews(app_id, country)
         collected_at = datetime.now().isoformat()
         for review in reviews:
             review["app_id"]       = app_id
@@ -98,7 +104,7 @@ def _run_collection(job_id: str, app_name: str, use_llm: bool) -> None:
             list(seed_keywords)
             + [row["keyword"] for row in database.get_all_rankings(app_id)]
         ))
-        rank_tracker.take_snapshot(app_id, tracked)
+        rank_tracker.take_snapshot(app_id, tracked, country)
         rank_tracker.compute_all_velocities(app_id)
 
         seed_warning = (
@@ -113,6 +119,7 @@ def _run_collection(job_id: str, app_name: str, use_llm: bool) -> None:
             "result": {
                 "app_id":           app_id,
                 "app_name":         app_data["name"],
+                "country":          country,
                 "reviews_saved":    review_count,
                 "keywords_tracked": len(tracked),
                 "sentiment":        sentiment_summary,
@@ -223,12 +230,14 @@ def track_keyword(app_id: int, keyword: str) -> dict:
     Returns:
         The refreshed ranking summary including the new keyword.
     """
-    if not database.get_app(app_id):
+    app_data = database.get_app(app_id)
+    if not app_data:
         raise HTTPException(status_code=404, detail=f"App {app_id} not found")
     keyword = keyword.strip()
     if not keyword:
         raise HTTPException(status_code=400, detail="keyword must not be empty")
-    summary = rank_tracker.track_keyword(app_id, keyword)
+    country = app_data.get("country") or config.DEFAULT_COUNTRY
+    summary = rank_tracker.track_keyword(app_id, keyword, country=country)
     return {"app_id": app_id, "total": len(summary), "rankings": summary}
 
 
@@ -246,9 +255,11 @@ def refresh_rankings(app_id: int) -> dict:
     Returns:
         The refreshed ranking summary after re-snapshotting and recomputing velocity.
     """
-    if not database.get_app(app_id):
+    app_data = database.get_app(app_id)
+    if not app_data:
         raise HTTPException(status_code=404, detail=f"App {app_id} not found")
-    summary = rank_tracker.refresh_rankings(app_id)
+    country = app_data.get("country") or config.DEFAULT_COUNTRY
+    summary = rank_tracker.refresh_rankings(app_id, country=country)
     return {"app_id": app_id, "total": len(summary), "rankings": summary}
 
 
@@ -266,12 +277,14 @@ def compare_competitor_ranks(app_id: int, keyword: str) -> dict:
     Returns:
         Dict with the keyword, the target's rank, and each competitor's rank.
     """
-    if not database.get_app(app_id):
+    app_data = database.get_app(app_id)
+    if not app_data:
         raise HTTPException(status_code=404, detail=f"App {app_id} not found")
     keyword = keyword.strip()
     if not keyword:
         raise HTTPException(status_code=400, detail="keyword must not be empty")
-    return rank_tracker.compare_competitor_ranks(app_id, keyword)
+    country = app_data.get("country") or config.DEFAULT_COUNTRY
+    return rank_tracker.compare_competitor_ranks(app_id, keyword, country=country)
 
 
 @app.get("/app/{app_id}/competitors")
@@ -317,7 +330,12 @@ def get_recommendations(app_id: int, use_llm: bool = False) -> dict:
 
 
 @app.post("/collect/{app_name}", dependencies=[Depends(verify_api_key)])
-def collect_app(app_name: str, background_tasks: BackgroundTasks, use_llm: bool = False) -> dict:
+def collect_app(
+    app_name: str,
+    background_tasks: BackgroundTasks,
+    use_llm: bool = False,
+    country: str = config.DEFAULT_COUNTRY,
+) -> dict:
     """
     Start the full collection and analysis pipeline for an app in the background.
 
@@ -329,13 +347,14 @@ def collect_app(app_name: str, background_tasks: BackgroundTasks, use_llm: bool 
     Args:
         app_name: App name to search for on the App Store.
         use_llm:  Whether to use LLM during analysis steps (query param).
+        country:  App Store country code to collect for (query param).
 
     Returns:
         Dict with job_id and initial status.
     """
     job_id = str(uuid.uuid4())
     _jobs[job_id] = {"status": "running"}
-    background_tasks.add_task(_run_collection, job_id, app_name, use_llm)
+    background_tasks.add_task(_run_collection, job_id, app_name, use_llm, country)
     return {"job_id": job_id, "status": "running"}
 
 

@@ -12,13 +12,16 @@ from collection import scraper
 logger = logging.getLogger(__name__)
 
 
-def take_snapshot(app_id: int, keywords: list[str]) -> dict:
+def take_snapshot(
+    app_id: int, keywords: list[str], country: str = config.DEFAULT_COUNTRY
+) -> dict:
     """
     Fetch and store today's rank for each keyword.
 
     Args:
         app_id:   iTunes app ID of the target app.
         keywords: List of keyword strings to snapshot.
+        country:  App Store country code to search within.
 
     Returns:
         Dict mapping keyword → rank (None if app not in top results).
@@ -26,7 +29,7 @@ def take_snapshot(app_id: int, keywords: list[str]) -> dict:
     today = str(date.today())
     snapshot = {}
     for keyword in keywords:
-        rank = scraper.fetch_keyword_ranking(keyword, app_id)
+        rank = scraper.fetch_keyword_ranking(keyword, app_id, country)
         # Persist every keyword — a NULL-rank row keeps a tracked-but-unranked
         # keyword visible ("Unranked") instead of silently disappearing.
         database.save_ranking(app_id, keyword, rank, today)
@@ -35,22 +38,25 @@ def take_snapshot(app_id: int, keywords: list[str]) -> dict:
     return snapshot
 
 
-def track_keyword(app_id: int, keyword: str) -> list[dict]:
+def track_keyword(
+    app_id: int, keyword: str, country: str = config.DEFAULT_COUNTRY
+) -> list[dict]:
     """
     Snapshot a single (typically user-added) keyword and return the summary.
 
     Args:
         app_id:  iTunes app ID of the target app.
         keyword: Keyword to start tracking.
+        country: App Store country code to search within.
 
     Returns:
         The refreshed ranking summary for the app (one row per tracked keyword).
     """
-    take_snapshot(app_id, [keyword])
+    take_snapshot(app_id, [keyword], country)
     return get_ranking_summary(app_id)
 
 
-def refresh_rankings(app_id: int) -> list[dict]:
+def refresh_rankings(app_id: int, country: str = config.DEFAULT_COUNTRY) -> list[dict]:
     """
     Re-snapshot every keyword already tracked for an app, without a full collect.
 
@@ -58,7 +64,8 @@ def refresh_rankings(app_id: int) -> list[dict]:
     review, or sentiment work), so it returns quickly enough to run synchronously.
 
     Args:
-        app_id: iTunes app ID of the target app.
+        app_id:  iTunes app ID of the target app.
+        country: App Store country code to search within.
 
     Returns:
         The refreshed ranking summary after re-snapshotting and recomputing velocity.
@@ -66,7 +73,7 @@ def refresh_rankings(app_id: int) -> list[dict]:
     tracked = list(dict.fromkeys(
         row["keyword"] for row in database.get_all_rankings(app_id)
     ))
-    take_snapshot(app_id, tracked)
+    take_snapshot(app_id, tracked, country)
     compute_all_velocities(app_id)
     logger.info(f"Refreshed rankings for {len(tracked)} keywords (app {app_id})")
     return get_ranking_summary(app_id)
@@ -163,6 +170,7 @@ def compare_competitor_ranks(
     app_id: int,
     keyword: str,
     max_competitors: int = config.RANK_COMPETITOR_COMPARE_MAX,
+    country: str = config.DEFAULT_COUNTRY,
 ) -> dict:
     """
     Compare the target's rank for a keyword against its top competitors.
@@ -174,6 +182,7 @@ def compare_competitor_ranks(
         app_id:          iTunes app ID of the target app.
         keyword:         Keyword to compare ranks for.
         max_competitors: Maximum number of competitors to look up.
+        country:         App Store country code to search within.
 
     Returns:
         Dict with keyword, the target {name, rank}, and a competitors list of
@@ -181,7 +190,7 @@ def compare_competitor_ranks(
     """
     target_app = database.get_app(app_id)
     target_name = target_app["name"] if target_app else str(app_id)
-    target_rank = scraper.fetch_keyword_ranking(keyword, app_id)
+    target_rank = scraper.fetch_keyword_ranking(keyword, app_id, country)
 
     competitors = sorted(
         database.get_competitors(app_id),
@@ -191,7 +200,7 @@ def compare_competitor_ranks(
 
     comp_results = []
     for comp in competitors:
-        rank = scraper.fetch_keyword_ranking(keyword, comp["app_id"])
+        rank = scraper.fetch_keyword_ranking(keyword, comp["app_id"], country)
         comp_results.append({
             "name":   comp.get("name", str(comp["app_id"])),
             "app_id": comp["app_id"],

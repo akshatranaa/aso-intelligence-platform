@@ -18,6 +18,31 @@ if not app_id:
 
 seed_warning_banner(app_id)
 
+with st.expander("ℹ️ How competitors are assessed"):
+    st.markdown(
+        """
+**1. Discovery** — we search the App Store for up to **5 seed keywords** (derived
+from your app's name, category, and — with *Use LLM* on — an AI-generated list of
+what real users would search) and collect the **top 15 apps** for each, forming a
+candidate pool of ~75 apps.
+
+**2. Relevance gate (the important part)** — an **AI judge** reads your app and each
+candidate (name, category, description) and keeps only **genuine direct competitors**
+— apps with the same core purpose. This is why merely-popular but unrelated apps
+(ChatGPT, Calculator, Chrome) are excluded even when they show up in search.
+*(With Use LLM off, a plain same-category filter is used instead.)*
+
+**3. Popularity score** — the kept competitors are ranked by a popularity score so the
+strongest appear first:
+
+`score = 0.70 × min(rating_count ÷ 1,000,000, 1.0)  +  0.30 × (avg_rating − 1) ÷ 4`
+
+**4. Tiers** —
+- **Tier 1**: shares your app's category **and** scores ≥ **0.40** (your closest, strongest rivals).
+- **Tier 2**: every other genuine competitor the judge kept.
+        """
+    )
+
 data = api_get(f"/app/{app_id}/competitors")
 if not data:
     st.stop()
@@ -33,8 +58,8 @@ if not all_competitors:
 # ── Summary metrics ───────────────────────────────────────────────────────────
 c1, c2, c3 = st.columns(3)
 c1.metric("Total Competitors", len(all_competitors))
-c2.metric("Tier 1 (score ≥ 0.75)", len(tier1))
-c3.metric("Tier 2 (score 0.45–0.75)", len(tier2))
+c2.metric("Tier 1 (top, same-category)", len(tier1))
+c3.metric("Tier 2 (other relevant)", len(tier2))
 
 st.divider()
 

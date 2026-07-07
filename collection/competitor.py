@@ -70,13 +70,18 @@ def _build_entry(app_data: dict, score: float, tier: str) -> dict:
     }
 
 
-def _gather_candidates(target_app_id: int, target_keywords: list[str]) -> list[dict]:
+def _gather_candidates(
+    target_app_id: int,
+    target_keywords: list[str],
+    country: str = config.DEFAULT_COUNTRY,
+) -> list[dict]:
     """
     Collect candidate apps from the seed-keyword searches (deduped, no target).
 
     Args:
         target_app_id:   The app being analysed (excluded from results).
         target_keywords: Seed keywords defining the competitive space.
+        country:         App Store country code to search within.
 
     Returns:
         List of candidate app metadata dicts.
@@ -84,14 +89,14 @@ def _gather_candidates(target_app_id: int, target_keywords: list[str]) -> list[d
     candidate_ids: set[int] = set()
     for keyword in target_keywords[: config.COMPETITOR_SEEDS_MAX]:
         for app_id in scraper.fetch_keyword_apps(
-            keyword, limit=config.COMPETITOR_CANDIDATES_PER_SEED
+            keyword, country=country, limit=config.COMPETITOR_CANDIDATES_PER_SEED
         ):
             if app_id != target_app_id:
                 candidate_ids.add(app_id)
 
     candidates: list[dict] = []
     for app_id in candidate_ids:
-        app_data = database.get_app(app_id) or scraper.fetch_app_by_id(app_id)
+        app_data = database.get_app(app_id) or scraper.fetch_app_by_id(app_id, country)
         if app_data:
             candidates.append(app_data)
     return candidates
@@ -102,6 +107,7 @@ def discover_competitors(
     target_keywords: list[str],
     max_depth: int = 1,
     use_llm: bool = True,
+    country: str = config.DEFAULT_COUNTRY,
 ) -> list[dict]:
     """
     Discover competitor apps for a target and gate them by relevance.
@@ -117,17 +123,18 @@ def discover_competitors(
         max_depth:       Unused (kept for signature compatibility) — the keyword
                          searches already surface the full candidate set.
         use_llm:         Whether to use the LLM relevance judge.
+        country:         App Store country code to search within.
 
     Returns:
         List of competitor dicts sorted by score descending.
     """
-    target_data = scraper.fetch_app_by_id(target_app_id)
+    target_data = scraper.fetch_app_by_id(target_app_id, country)
     if target_data is None:
         logger.error(f"Could not fetch target app {target_app_id}")
         return []
     target_category = target_data.get("category")
 
-    candidates = _gather_candidates(target_app_id, target_keywords)
+    candidates = _gather_candidates(target_app_id, target_keywords, country)
     if not candidates:
         return []
 

@@ -16,6 +16,23 @@ app_id = require_app_id()
 if not app_id:
     st.stop()
 
+with st.expander("ℹ️ How sentiment is scored"):
+    st.markdown(
+        """
+Each review is labelled **Positive**, **Negative**, or **Neutral** using its star
+rating first, and AI only where the rating is ambiguous:
+
+- **4–5 ★ → Positive** and **1–2 ★ → Negative** — assigned directly, no AI needed.
+- **3 ★ (ambiguous)** → the review **text** decides:
+  - With *Use LLM* on, an **AI model** reads it and classifies it Positive / Negative / Neutral (it understands sarcasm, context, and mixed-language reviews).
+  - With *Use LLM* off, a rule-based scorer (**VADER**) is used: compound ≥ +0.05 → Positive, ≤ −0.05 → Negative, otherwise Neutral.
+
+**Note:** *Reviews Avg* below is the average star rating of the **recent reviews
+collected here** — a small, recency-skewed sample, not the app's official all-time
+store rating.
+        """
+    )
+
 sentiment = api_get(f"/app/{app_id}/sentiment")
 if not sentiment:
     st.stop()
