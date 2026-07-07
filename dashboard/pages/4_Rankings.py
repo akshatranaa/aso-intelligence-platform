@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import streamlit as st
 import plotly.express as px
 import pandas as pd
-from utils import api_get, api_post, trend_badge, require_app_id
+from utils import api_get, api_post, loading_overlay, trend_badge, require_app_id
 
 st.set_page_config(page_title="Rankings", page_icon="📈", layout="wide")
 st.title("📈 Keyword Rankings")
@@ -16,7 +16,8 @@ app_id = require_app_id()
 if not app_id:
     st.stop()
 
-data = api_get(f"/app/{app_id}/rankings")
+with loading_overlay("Loading rankings…"):
+    data = api_get(f"/app/{app_id}/rankings")
 if data is None:
     st.stop()
 
@@ -37,7 +38,7 @@ with ac2:
         if not kw:
             st.warning("Enter a keyword to track.")
         else:
-            with st.spinner(f"Fetching rank for '{kw}'…"):
+            with loading_overlay(f"Fetching rank for '{kw}'…"):
                 res = api_post(f"/app/{app_id}/rankings/track", params={"keyword": kw})
             if res:
                 st.success(f"Now tracking '{kw}'.")
@@ -47,7 +48,7 @@ if st.button(
     "🔄 Re-run ranking analysis",
     help="Re-check ranks for every tracked keyword — no full collection needed.",
 ):
-    with st.spinner("Refreshing all tracked keyword ranks…"):
+    with loading_overlay("Refreshing all tracked keyword ranks…"):
         res = api_post(f"/app/{app_id}/rankings/refresh")
     if res:
         st.success("Rankings refreshed.")
@@ -151,7 +152,7 @@ with comp_col2:
     do_compare = st.button("Compare competitors", use_container_width=True)
 
 if do_compare and sel_kw:
-    with st.spinner(f"Looking up competitor ranks for '{sel_kw}'… (a few seconds)"):
+    with loading_overlay(f"Looking up competitor ranks for '{sel_kw}'… (a few seconds)"):
         cmp = api_get(f"/app/{app_id}/rankings/compare", params={"keyword": sel_kw})
     if cmp:
         rows = [{"App": f"{cmp['target']['name']} (you)", "Rank": cmp["target"]["rank"]}]

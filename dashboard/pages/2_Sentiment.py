@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import streamlit as st
 import plotly.express as px
 import pandas as pd
-from utils import api_get, require_app_id
+from utils import api_get, loading_overlay, require_app_id
 
 st.set_page_config(page_title="Sentiment", page_icon="💬", layout="wide")
 st.title("💬 Sentiment Analysis")
@@ -33,7 +33,8 @@ store rating.
         """
     )
 
-sentiment = api_get(f"/app/{app_id}/sentiment")
+with loading_overlay("Loading sentiment…"):
+    sentiment = api_get(f"/app/{app_id}/sentiment")
 if not sentiment:
     st.stop()
 

@@ -5,7 +5,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import streamlit as st
-from utils import api_get, priority_badge, require_app_id
+from utils import api_get, loading_overlay, priority_badge, require_app_id
 
 st.set_page_config(page_title="Overview", page_icon="🏠", layout="wide")
 st.title("🏠 Overview")
@@ -15,7 +15,8 @@ if not app_id:
     st.stop()
 
 # ── App metadata ──────────────────────────────────────────────────────────────
-app_data = api_get(f"/app/{app_id}")
+with loading_overlay("Loading overview…"):
+    app_data = api_get(f"/app/{app_id}")
 if not app_data:
     st.stop()
 

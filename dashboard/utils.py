@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 
 import requests
 import streamlit as st
@@ -183,6 +184,30 @@ def render_loading_overlay(placeholder, text: str) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+@contextmanager
+def loading_overlay(text: str = "Loading…"):
+    """
+    Context manager that shows the centered spinner overlay while its body runs.
+
+    Streamlit streams elements to the browser as the script executes, so the
+    overlay is visible during any blocking call inside the `with` block (e.g. a
+    slow API request or a Render cold start) and is cleared automatically after.
+
+    Usage:
+        with loading_overlay("Loading rankings…"):
+            data = api_get("/app/123/rankings")
+
+    Args:
+        text: Status text shown under the spinner.
+    """
+    placeholder = st.empty()
+    render_loading_overlay(placeholder, text)
+    try:
+        yield
+    finally:
+        placeholder.empty()
 
 
 def trend_badge(trend: str) -> str:
