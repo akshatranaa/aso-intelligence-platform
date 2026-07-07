@@ -154,9 +154,9 @@ with comp_col2:
 n_competitors = st.slider(
     "How many competitors to compare (top N by popularity)",
     min_value=1,
-    max_value=15,
+    max_value=25,
     value=5,
-    help="Each competitor adds ~1s of live lookup time.",
+    help="Each competitor adds ~1s of live lookup time (25 ≈ half a minute).",
 )
 
 if do_compare and sel_kw:

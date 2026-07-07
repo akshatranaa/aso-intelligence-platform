@@ -271,7 +271,7 @@ def compare_competitor_ranks(
     Compare where the target and its top-N competitors rank for one keyword.
 
     Live iTunes lookups (one per app), so this is bounded and on-demand. n is
-    clamped to 1–20 to keep the total number of rate-limited calls reasonable.
+    clamped to 1–25 to keep the total number of rate-limited calls reasonable.
 
     Args:
         app_id:  iTunes numeric app ID of the target app.
@@ -287,7 +287,7 @@ def compare_competitor_ranks(
     keyword = keyword.strip()
     if not keyword:
         raise HTTPException(status_code=400, detail="keyword must not be empty")
-    n = max(1, min(n, 20))
+    n = max(1, min(n, 25))
     country = app_data.get("country") or config.DEFAULT_COUNTRY
     return rank_tracker.compare_competitor_ranks(
         app_id, keyword, max_competitors=n, country=country
