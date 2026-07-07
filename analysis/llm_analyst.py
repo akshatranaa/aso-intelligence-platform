@@ -180,19 +180,36 @@ def judge_competitors(
         for c in candidates
     )
     prompt = f"""
-You are an App Store competitive-analysis expert.
+You are a strict App Store competitive-analysis expert. Your job is to identify ONLY
+genuine direct competitors — apps a user would actually compare against the target
+before choosing one.
 
 TARGET APP: {target_app.get("name","")} — {_short(target_app)}
 
-Below is a numbered list of candidate apps (format "app_id: name — description").
-Return ONLY a JSON array of the app_id integers that are genuine DIRECT
-competitors of the target — apps with the same core purpose/function. Exclude
-apps that are merely popular or loosely related.
+DIRECT COMPETITOR TEST — a candidate must pass ALL of these:
+1. Same primary use case: the #1 reason someone opens the candidate is essentially
+   the same as the #1 reason someone opens the target.
+2. Substitutable: a user deciding "which app should I use for this" would realistically
+   put the target and this candidate on the same shortlist.
+3. Same core function, not just the same category, audience, or a shared feature.
 
-Candidates:
+EXCLUDE a candidate if any of these apply:
+- It shares only a category or a single feature with the target but its primary
+  purpose is different (e.g. a photo-editing app is NOT a competitor to a cloud
+  photo-storage app, even though both are "photo" apps).
+- It's complementary rather than a substitute (integrates with / extends the target
+  rather than replacing it).
+- It's meaningfully broader or narrower in scope than the target's core function.
+- It's only popular, trending, or loosely thematically related — popularity is never
+  a reason to include.
+- You're unsure. Default to EXCLUDE — a missed competitor is fine, a wrong one isn't.
+
+Candidates (format "app_id: name — description"):
 {listing}
 
-Return only the JSON array of app_id integers.
+Return ONLY a JSON array of app_id integers for candidates that pass ALL criteria
+above — no explanation, no markdown, no text outside the array. If none qualify,
+return [].
 """
     result = _call_llm(prompt, expect_json=True)
     if not isinstance(result, list):
