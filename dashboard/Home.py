@@ -4,6 +4,7 @@ import time
 
 import streamlit as st
 from utils import (
+    active_country_selector,
     api_get,
     api_post,
     country_label,
@@ -128,7 +129,11 @@ st.divider()
 
 # ── Currently loaded app status ───────────────────────────────────────────────
 if st.session_state.app_id:
-    app_data = api_get(f"/app/{st.session_state.app_id}")
+    # The country picker (shared across all pages) drives which store's snapshot
+    # is shown — defaults to the country selected when the app was loaded.
+    view_country = active_country_selector(st.session_state.app_id)
+    _vp = {"country": view_country} if view_country else None
+    app_data = api_get(f"/app/{st.session_state.app_id}", params=_vp)
     if app_data:
         st.subheader(f"Currently viewing: {app_data['name']}")
         c1, c2, c3, c4, c5 = st.columns(5)
@@ -136,11 +141,11 @@ if st.session_state.app_id:
         c2.metric("Avg Rating",   f"{app_data.get('avg_rating', 'N/A')} ⭐")
         c3.metric("Rating Count", f"{app_data.get('rating_count', 0):,}")
         c4.metric("Category",     app_data.get("category", "N/A"))
-        c5.metric("Country",      country_label(app_data.get("country", "")))
+        c5.metric("Country",      country_label(view_country or app_data.get("country", "")))
 
         st.caption(
-            "Live rank lookups (Rankings page) use the App Store country this app "
-            "was collected for."
+            "All pages show data for the country selected above. Collect the app "
+            "for another country to add it here."
         )
         st.info("Use the sidebar to navigate to Sentiment, Rankings, Competitors, and Recommendations.")
 else:

@@ -120,16 +120,30 @@ st.divider()
 # ── Competitor insights ────────────────────────────────────────────────────────
 st.subheader("🏆 Competitor Insights")
 comp_rec = data.get("competitor_recommendations", {})
-if comp_rec:
-    left, right = st.columns(2)
-    with left:
-        st.markdown("**Competitor Advantages**")
-        for item in (comp_rec.get("competitor_advantages") or []):
-            st.markdown(f"- {item}")
-    with right:
-        st.markdown("**Your Advantages**")
-        for item in (comp_rec.get("target_advantages") or []):
-            st.markdown(f"- {item}")
+if comp_rec and not comp_rec.get("error"):
+    top = comp_rec.get("top_competitor")
+    if top:
+        st.caption(f"Compared against your top competitor: **{top}**")
+
+    comp_adv = comp_rec.get("competitor_advantages") or []
+    your_adv = comp_rec.get("our_advantages") or []
+
+    if not use_llm and not comp_adv and not your_adv:
+        st.info("Enable the LLM toggle above for competitor advantage analysis.")
+    else:
+        left, right = st.columns(2)
+        with left:
+            st.markdown("**Competitor Advantages**")
+            for item in comp_adv:
+                st.markdown(f"- {item}")
+            if not comp_adv:
+                st.write("—")
+        with right:
+            st.markdown("**Your Advantages**")
+            for item in your_adv:
+                st.markdown(f"- {item}")
+            if not your_adv:
+                st.write("—")
 
     missing = comp_rec.get("missing_keywords") or []
     if missing:
@@ -140,22 +154,17 @@ if comp_rec:
     if rec_text:
         st.info(rec_text)
 else:
-    st.info("No competitor recommendations available (requires LLM or tier1 competitor).")
+    st.info("No competitor recommendations yet — collect the app so it has competitors.")
 
 st.divider()
 
 # ── Description rewrite ────────────────────────────────────────────────────────
 st.subheader("✍️ Suggested Description Rewrite")
-new_desc = data.get("suggested_description")
+new_desc = data.get("description_recommendation")
 if new_desc:
     st.markdown(new_desc)
     st.caption(f"Character count: {len(new_desc)} / 4000")
+elif use_llm:
+    st.warning("Couldn't generate a rewrite (the AI model may be busy). Try again in a moment.")
 else:
-    st.info("Enable LLM toggle above to generate a description rewrite suggestion.")
-
-# ── Keyword narrative ──────────────────────────────────────────────────────────
-narrative = data.get("keyword_narrative")
-if narrative:
-    st.divider()
-    st.subheader("📖 Keyword Strategy")
-    st.write(narrative)
+    st.info("Enable the LLM toggle above to generate a description rewrite suggestion.")

@@ -167,13 +167,15 @@ def _get_competitor_recommendations(
     """
     target_app  = database.get_app(app_id)
     competitors = database.get_competitors(app_id, country)
-    tier1       = [c for c in competitors if c.get("competitor_tier") == "tier1"]
+    # Prefer a tier1 (same-category, strong) competitor, but fall back to the
+    # best competitor of any tier so apps without a tier1 still get insights.
+    pool = [c for c in competitors if c.get("competitor_tier") == "tier1"] or competitors
 
-    if not tier1:
-        logger.warning("No tier1 competitors found — skipping competitor recommendations")
-        return {"error": "No tier1 competitors available"}
+    if not pool:
+        logger.warning("No competitors found — skipping competitor recommendations")
+        return {"error": "No competitors available"}
 
-    top_competitor = max(tier1, key=lambda c: c.get("competitor_score") or 0.0)
+    top_competitor = max(pool, key=lambda c: c.get("competitor_score") or 0.0)
     comparison     = llm_analyst.compare_competitor_metadata(
         target_app, top_competitor, use_llm=use_llm
     )
