@@ -39,6 +39,12 @@ with left:
     app_name_input = st.text_input("App name", placeholder="e.g. Spotify")
     collect_country = country_selectbox("App Store country", key="collect_country")
     use_llm = st.checkbox("Use LLM during analysis (costs API credits)", value=False)
+    force = st.checkbox(
+        "Re-discover competitors",
+        value=False,
+        help="Ignore the 7-day cache and re-run competitor discovery + the AI "
+             "judge from scratch. Slower and uses more API calls.",
+    )
 
     if st.button("Collect ▶", type="primary", use_container_width=True):
         if not app_name_input.strip():
@@ -46,7 +52,7 @@ with left:
         else:
             start = api_post(
                 f"/collect/{app_name_input.strip()}",
-                params={"use_llm": use_llm, "country": collect_country},
+                params={"use_llm": use_llm, "country": collect_country, "force": force},
             )
 
             if start and start.get("job_id"):

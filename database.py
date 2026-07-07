@@ -842,6 +842,28 @@ def get_competitors(target_app_id: int, country: str | None = None) -> list[dict
     return result
 
 
+def get_competitors_last_discovered(target_app_id: int, country: str) -> str | None:
+    """
+    Return when competitors were most recently discovered for a target+country.
+
+    Args:
+        target_app_id: The target app.
+        country:       App Store country code.
+
+    Returns:
+        The latest discovered_at ISO timestamp string, or None if never run.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT MAX(discovered_at) AS last FROM competitors "
+            "WHERE target_app_id = %s AND country = %s",
+            (target_app_id, country),
+        )
+        row = cursor.fetchone()
+    return row["last"] if row else None
+
+
 def get_app_countries(app_id: int) -> list[str]:
     """
     Return the App Store countries this app has been collected for.

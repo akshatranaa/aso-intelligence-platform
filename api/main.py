@@ -65,7 +65,11 @@ def _startup() -> None:
 
 
 def _run_collection(
-    job_id: str, app_name: str, use_llm: bool, country: str = config.DEFAULT_COUNTRY
+    job_id: str,
+    app_name: str,
+    use_llm: bool,
+    country: str = config.DEFAULT_COUNTRY,
+    force: bool = False,
 ) -> None:
     """
     Run the full collection pipeline and record its outcome in _jobs.
@@ -75,6 +79,8 @@ def _run_collection(
         app_name: App name to search for on the App Store.
         use_llm:  Whether to use LLM during analysis steps.
         country:  App Store country code to collect for.
+        force:    Re-discover competitors even if a recent result exists (also
+                  forces seed regeneration).
     """
     try:
         database.create_tables()
@@ -90,13 +96,35 @@ def _run_collection(
         app_data["is_target_app"] = 1
         database.save_app(app_data)
         app_id = app_data["app_id"]
-        # Derive seeds once and reuse everywhere (one LLM call, consistent status).
-        seed_keywords, used_llm_seeds = seeds.derive_seed_keywords(
-            app_data, use_llm=use_llm
-        )
         logger.info(f"Collecting data for {app_data['name']} ({app_id}) [{country}]")
 
-        competitor.discover_competitors(app_id, seed_keywords, use_llm=use_llm, country=country)
+        # Fast path: if this app+country was already collected recently (competitors
+        # still fresh AND it already has tracked keywords), skip seed generation and
+        # competitor discovery — just refresh reviews/rankings against the existing set.
+        existing_tracked = [
+            row["keyword"] for row in database.get_all_rankings(app_id, country)
+        ]
+        reuse = (
+            not force
+            and bool(existing_tracked)
+            and competitor.has_fresh_competitors(app_id, country)
+        )
+
+        if reuse:
+            seed_keywords, used_llm_seeds = [], True
+            logger.info(
+                f"Re-collect fast path for {app_id} [{country}]: reusing seeds + "
+                f"competitors, refreshing reviews/rankings only"
+            )
+        else:
+            # Derive seeds once and reuse everywhere (one LLM call, consistent status).
+            seed_keywords, used_llm_seeds = seeds.derive_seed_keywords(
+                app_data, use_llm=use_llm
+            )
+
+        competitor.discover_competitors(
+            app_id, seed_keywords, use_llm=use_llm, country=country, force=force
+        )
 
         reviews = scraper.fetch_reviews(app_id, country)
         collected_at = datetime.now().isoformat()
@@ -112,10 +140,7 @@ def _run_collection(
 
         # Rank-track the seed keywords plus any keyword already tracked for this
         # app+country (custom-added keywords keep refreshing so velocity accrues).
-        tracked = list(dict.fromkeys(
-            list(seed_keywords)
-            + [row["keyword"] for row in database.get_all_rankings(app_id, country)]
-        ))
+        tracked = list(dict.fromkeys(list(seed_keywords) + existing_tracked))
         rank_tracker.take_snapshot(app_id, tracked, country)
         rank_tracker.compute_all_velocities(app_id, country)
 
@@ -407,6 +432,7 @@ def collect_app(
     background_tasks: BackgroundTasks,
     use_llm: bool = False,
     country: str = config.DEFAULT_COUNTRY,
+    force: bool = False,
 ) -> dict:
     """
     Start the full collection and analysis pipeline for an app in the background.
@@ -420,13 +446,14 @@ def collect_app(
         app_name: App name to search for on the App Store.
         use_llm:  Whether to use LLM during analysis steps (query param).
         country:  App Store country code to collect for (query param).
+        force:    Re-discover competitors even if a recent result exists (query param).
 
     Returns:
         Dict with job_id and initial status.
     """
     job_id = str(uuid.uuid4())
     _jobs[job_id] = {"status": "running"}
-    background_tasks.add_task(_run_collection, job_id, app_name, use_llm, country)
+    background_tasks.add_task(_run_collection, job_id, app_name, use_llm, country, force)
     return {"job_id": job_id, "status": "running"}
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
 
 import config
 import database
@@ -10,6 +11,39 @@ from analysis import llm_analyst
 from collection import scraper
 
 logger = logging.getLogger(__name__)
+
+
+def _is_fresh(iso_timestamp: str, days: int) -> bool:
+    """Return True if an ISO timestamp is within the last `days` days."""
+    try:
+        discovered = datetime.fromisoformat(iso_timestamp)
+    except (TypeError, ValueError):
+        return False
+    return (datetime.now() - discovered) < timedelta(days=days)
+
+
+def _entry_from_row(comp: dict) -> dict:
+    """Shape a stored competitor row like a freshly discovered entry."""
+    return {
+        "app_id":       comp["app_id"],
+        "name":         comp.get("name"),
+        "score":        comp.get("competitor_score"),
+        "tier":         comp.get("competitor_tier"),
+        "category":     comp.get("category"),
+        "avg_rating":   comp.get("avg_rating"),
+        "rating_count": comp.get("rating_count"),
+    }
+
+
+def has_fresh_competitors(target_app_id: int, country: str) -> bool:
+    """
+    Return True if competitors for this target+country were discovered recently.
+
+    "Recently" is within config.COMPETITOR_REFRESH_DAYS. Lets the collection flow
+    skip both seed generation and competitor discovery on a quick re-collect.
+    """
+    last = database.get_competitors_last_discovered(target_app_id, country)
+    return bool(last) and _is_fresh(last, config.COMPETITOR_REFRESH_DAYS)
 
 
 def calculate_competitor_score(app_data: dict) -> float:
@@ -108,6 +142,7 @@ def discover_competitors(
     max_depth: int = 1,
     use_llm: bool = True,
     country: str = config.DEFAULT_COUNTRY,
+    force: bool = False,
 ) -> list[dict]:
     """
     Discover competitor apps for a target and gate them by relevance.
@@ -117,6 +152,10 @@ def discover_competitors(
     use_llm is False, it falls back to a same-category filter. Judged competitors
     are scored by popularity, tiered, and saved scoped to the target.
 
+    If competitors were already discovered for this target+country within the
+    last config.COMPETITOR_REFRESH_DAYS days, they are reused as-is (no searches
+    or LLM judge) unless force=True — this makes re-collecting an app much cheaper.
+
     Args:
         target_app_id:   iTunes ID of the app to find competitors for.
         target_keywords: Seed keywords defining the competitive space.
@@ -124,10 +163,25 @@ def discover_competitors(
                          searches already surface the full candidate set.
         use_llm:         Whether to use the LLM relevance judge.
         country:         App Store country code to search within.
+        force:           Re-discover even if a recent result exists.
 
     Returns:
         List of competitor dicts sorted by score descending.
     """
+    # Reuse a recent discovery for this target+country instead of re-running the
+    # searches and LLM judge (competitor sets change slowly).
+    if not force and has_fresh_competitors(target_app_id, country):
+        existing = database.get_competitors(target_app_id, country)
+        logger.info(
+            f"Reusing {len(existing)} competitors for {target_app_id} [{country}] "
+            f"(discovered < {config.COMPETITOR_REFRESH_DAYS}d ago)"
+        )
+        return sorted(
+            (_entry_from_row(c) for c in existing),
+            key=lambda x: x["score"] or 0.0,
+            reverse=True,
+        )
+
     target_data = scraper.fetch_app_by_id(target_app_id, country)
     if target_data is None:
         logger.error(f"Could not fetch target app {target_app_id}")

@@ -32,6 +32,10 @@ TIER_1_THRESHOLD = 0.40
 COMPETITOR_SEEDS_MAX          = 5
 COMPETITOR_CANDIDATES_PER_SEED = 15
 
+# Re-collecting an app within this many days reuses its already-discovered
+# competitors (per country) instead of re-running the searches + LLM judge.
+COMPETITOR_REFRESH_DAYS = 7
+
 # Keyword analysis weights — must sum to 1.0
 PROXY_OPPORTUNITY_WEIGHTS = {
     "volume":     0.45,
