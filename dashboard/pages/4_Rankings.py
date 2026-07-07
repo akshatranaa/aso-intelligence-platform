@@ -151,9 +151,23 @@ with comp_col1:
 with comp_col2:
     do_compare = st.button("Compare competitors", use_container_width=True)
 
+n_competitors = st.slider(
+    "How many competitors to compare (top N by popularity)",
+    min_value=1,
+    max_value=15,
+    value=5,
+    help="Each competitor adds ~1s of live lookup time.",
+)
+
 if do_compare and sel_kw:
-    with loading_overlay(f"Looking up competitor ranks for '{sel_kw}'… (a few seconds)"):
-        cmp = api_get(f"/app/{app_id}/rankings/compare", params={"keyword": sel_kw})
+    with loading_overlay(
+        f"Looking up ranks for '{sel_kw}' across {n_competitors} competitors… "
+        f"(~{n_competitors + 1}s)"
+    ):
+        cmp = api_get(
+            f"/app/{app_id}/rankings/compare",
+            params={"keyword": sel_kw, "n": n_competitors},
+        )
     if cmp:
         rows = [{"App": f"{cmp['target']['name']} (you)", "Rank": cmp["target"]["rank"]}]
         rows += [{"App": c["name"], "Rank": c["rank"]} for c in cmp["competitors"]]

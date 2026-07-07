@@ -87,17 +87,29 @@ with right:
             rating = r.get("rating")
             if rating in rating_counts:
                 rating_counts[rating] += 1
+        def _rating_sentiment(stars: int) -> str:
+            if stars >= 4:
+                return "Positive"
+            if stars == 3:
+                return "Neutral"
+            return "Negative"
+
         df_ratings = pd.DataFrame({
-            "Rating": [f"{'⭐' * i} ({i})" for i in range(5, 0, -1)],
-            "Count":  [rating_counts[i] for i in range(5, 0, -1)],
+            "Rating":    [f"{'⭐' * i} ({i})" for i in range(5, 0, -1)],
+            "Count":     [rating_counts[i] for i in range(5, 0, -1)],
+            "Sentiment": [_rating_sentiment(i) for i in range(5, 0, -1)],
         })
         fig2 = px.bar(
             df_ratings,
             x="Count",
             y="Rating",
             orientation="h",
-            color="Count",
-            color_continuous_scale=["#FF4444", "#FF8800", "#00C851"],
+            color="Sentiment",
+            color_discrete_map={
+                "Positive": "#00C851",  # 4-5 stars → green
+                "Neutral":  "#FFBB33",  # 3 stars   → yellow
+                "Negative": "#FF4444",  # 1-2 stars → red
+            },
         )
         fig2.update_layout(margin=dict(t=0, b=0, l=0, r=0), showlegend=False)
         st.plotly_chart(fig2, use_container_width=True)

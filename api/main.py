@@ -264,15 +264,19 @@ def refresh_rankings(app_id: int) -> dict:
 
 
 @app.get("/app/{app_id}/rankings/compare")
-def compare_competitor_ranks(app_id: int, keyword: str) -> dict:
+def compare_competitor_ranks(
+    app_id: int, keyword: str, n: int = config.RANK_COMPETITOR_COMPARE_MAX
+) -> dict:
     """
-    Compare where the target and its top competitors rank for one keyword.
+    Compare where the target and its top-N competitors rank for one keyword.
 
-    Live iTunes lookups (one per app), so this is bounded and on-demand.
+    Live iTunes lookups (one per app), so this is bounded and on-demand. n is
+    clamped to 1–20 to keep the total number of rate-limited calls reasonable.
 
     Args:
         app_id:  iTunes numeric app ID of the target app.
         keyword: Keyword to compare ranks for (query param).
+        n:       Number of top competitors (by score) to compare (query param).
 
     Returns:
         Dict with the keyword, the target's rank, and each competitor's rank.
@@ -283,8 +287,11 @@ def compare_competitor_ranks(app_id: int, keyword: str) -> dict:
     keyword = keyword.strip()
     if not keyword:
         raise HTTPException(status_code=400, detail="keyword must not be empty")
+    n = max(1, min(n, 20))
     country = app_data.get("country") or config.DEFAULT_COUNTRY
-    return rank_tracker.compare_competitor_ranks(app_id, keyword, country=country)
+    return rank_tracker.compare_competitor_ranks(
+        app_id, keyword, max_competitors=n, country=country
+    )
 
 
 @app.get("/app/{app_id}/competitors")
