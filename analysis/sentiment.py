@@ -14,7 +14,9 @@ logger = logging.getLogger(__name__)
 _analyzer = SentimentIntensityAnalyzer()
 
 
-def score_all_reviews(app_id: int, use_llm: bool = True) -> dict:
+def score_all_reviews(
+    app_id: int, use_llm: bool = True, country: str | None = None
+) -> dict:
     """
     Run the full sentiment pipeline for one app.
 
@@ -24,11 +26,12 @@ def score_all_reviews(app_id: int, use_llm: bool = True) -> dict:
     Args:
         app_id:  iTunes app ID.
         use_llm: Whether to use LLM as primary scorer.
+        country: If given, only score reviews for that App Store country.
 
     Returns:
         Dict with aggregate sentiment stats.
     """
-    reviews = database.get_reviews(app_id)
+    reviews = database.get_reviews(app_id, country)
     if not reviews:
         return _empty_summary(app_id)
 
@@ -250,20 +253,19 @@ def _build_summary(reviews: list[dict]) -> dict:
     }
 
 
-def get_sentiment_summary(app_id: int) -> dict | None:
+def get_sentiment_summary(app_id: int, country: str | None = None) -> dict | None:
     """
     Read already-computed sentiment results from database without recomputing.
 
-    Used by the API layer in Week 4.
-
     Args:
-        app_id: iTunes app ID.
+        app_id:  iTunes app ID.
+        country: If given, only reviews collected for that App Store country.
 
     Returns:
         Aggregate sentiment dict, or None if no scored reviews exist.
     """
     reviews = [
-        r for r in database.get_reviews(app_id)
+        r for r in database.get_reviews(app_id, country)
         if r["sentiment_label"] is not None
     ]
     if not reviews:

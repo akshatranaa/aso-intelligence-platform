@@ -157,6 +157,38 @@ def country_selectbox(label: str, key: str, default: str | None = None) -> str:
     )
 
 
+def active_country_selector(app_id: int, key: str = "active_country") -> str | None:
+    """
+    Render the active-country picker for a loaded app and return the selection.
+
+    Lists the App Store countries the app has actually been collected for and
+    persists the choice in session state (shared key) so every page stays on the
+    same country. Returns None when the app has no collected data yet.
+
+    Args:
+        app_id: The currently loaded app's ID.
+        key:    Session-state / widget key (shared across pages by default).
+
+    Returns:
+        The selected two-letter country code, or None if the app has no data.
+    """
+    data = api_get(f"/app/{app_id}/countries") or {}
+    countries = data.get("countries", [])
+    if not countries:
+        return None
+    # Repair the stored selection so it's always a valid option (e.g. after
+    # switching to a different app that has different countries).
+    if st.session_state.get(key) not in countries:
+        st.session_state[key] = countries[0]
+    selected = st.selectbox(
+        "🌍 Country", countries, format_func=country_label, key=key,
+        help="Which App Store's data to view. Collect the app for another "
+             "country to add more.",
+    )
+    st.session_state.country = selected
+    return selected
+
+
 def render_loading_overlay(placeholder, text: str) -> None:
     """
     Render a full-screen centered spinner overlay into a placeholder.

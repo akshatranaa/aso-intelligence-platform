@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import streamlit as st
 import plotly.express as px
 import pandas as pd
-from utils import api_get, loading_overlay, require_app_id
+from utils import active_country_selector, api_get, loading_overlay, require_app_id
 
 st.set_page_config(page_title="Sentiment", page_icon="💬", layout="wide")
 st.title("💬 Sentiment Analysis")
@@ -15,6 +15,9 @@ st.title("💬 Sentiment Analysis")
 app_id = require_app_id()
 if not app_id:
     st.stop()
+
+country = active_country_selector(app_id)
+_p = {"country": country} if country else None
 
 with st.expander("ℹ️ How sentiment is scored"):
     st.markdown(
@@ -34,7 +37,7 @@ store rating.
     )
 
 with loading_overlay("Loading sentiment…"):
-    sentiment = api_get(f"/app/{app_id}/sentiment")
+    sentiment = api_get(f"/app/{app_id}/sentiment", params=_p)
 if not sentiment:
     st.stop()
 
@@ -79,7 +82,7 @@ with left:
 
 with right:
     st.subheader("Rating Distribution")
-    reviews_data = api_get(f"/app/{app_id}/reviews")
+    reviews_data = api_get(f"/app/{app_id}/reviews", params=_p)
     if reviews_data and reviews_data.get("reviews"):
         reviews = reviews_data["reviews"]
         rating_counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
@@ -118,7 +121,7 @@ st.divider()
 
 # ── Recent reviews table ──────────────────────────────────────────────────────
 st.subheader("Recent Reviews")
-reviews_data = reviews_data or api_get(f"/app/{app_id}/reviews")
+reviews_data = reviews_data or api_get(f"/app/{app_id}/reviews", params=_p)
 if reviews_data and reviews_data.get("reviews"):
     reviews = reviews_data["reviews"]
     df = pd.DataFrame(reviews)[["rating", "sentiment_label", "review_text", "author", "review_date"]]

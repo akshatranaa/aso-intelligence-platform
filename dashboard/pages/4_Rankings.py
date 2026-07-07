@@ -8,6 +8,7 @@ import streamlit as st
 import plotly.express as px
 import pandas as pd
 from utils import (
+    active_country_selector,
     api_get,
     api_post,
     country_label,
@@ -24,8 +25,11 @@ app_id = require_app_id()
 if not app_id:
     st.stop()
 
+country = active_country_selector(app_id)
+_p = {"country": country} if country else None
+
 with loading_overlay("Loading rankings…"):
-    data = api_get(f"/app/{app_id}/rankings")
+    data = api_get(f"/app/{app_id}/rankings", params=_p)
 if data is None:
     st.stop()
 
@@ -47,7 +51,10 @@ with ac2:
             st.warning("Enter a keyword to track.")
         else:
             with loading_overlay(f"Fetching rank for '{kw}'…"):
-                res = api_post(f"/app/{app_id}/rankings/track", params={"keyword": kw})
+                res = api_post(
+                    f"/app/{app_id}/rankings/track",
+                    params={"keyword": kw, **(_p or {})},
+                )
             if res:
                 st.success(f"Now tracking '{kw}'.")
                 st.rerun()
@@ -57,7 +64,7 @@ if st.button(
     help="Re-check ranks for every tracked keyword — no full collection needed.",
 ):
     with loading_overlay("Refreshing all tracked keyword ranks…"):
-        res = api_post(f"/app/{app_id}/rankings/refresh")
+        res = api_post(f"/app/{app_id}/rankings/refresh", params=_p)
     if res:
         st.success("Rankings refreshed.")
         st.rerun()
@@ -155,9 +162,9 @@ st.caption(
     "independent of where the app was collected (lower rank = better)."
 )
 
-# Default the country to whatever the app was collected for (but let it change).
-app_meta = api_get(f"/app/{app_id}") or {}
-default_country = (app_meta.get("country") or "in").lower()
+# Default the compare country to the active analysis country (but let it change —
+# the comparison is a live lookup, so any store works).
+default_country = (country or "in").lower()
 
 kw_options = [r["keyword"] for r in rankings]
 comp_col1, comp_col2 = st.columns([2, 1])

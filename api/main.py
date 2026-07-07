@@ -55,6 +55,15 @@ def verify_api_key(x_api_key: Optional[str] = Header(default=None)) -> None:
 _jobs: dict[str, dict] = {}
 
 
+@app.on_event("startup")
+def _startup() -> None:
+    """Ensure the schema (incl. the multi-country migration) is current on boot."""
+    try:
+        database.create_tables()
+    except Exception as e:
+        logger.error(f"Startup schema init failed: {e}")
+
+
 def _run_collection(
     job_id: str, app_name: str, use_llm: bool, country: str = config.DEFAULT_COUNTRY
 ) -> None:
@@ -93,19 +102,22 @@ def _run_collection(
         collected_at = datetime.now().isoformat()
         for review in reviews:
             review["app_id"]       = app_id
+            review["country"]      = country
             review["collected_at"] = collected_at
         review_count = database.save_reviews(reviews)
 
-        sentiment_summary = sentiment.score_all_reviews(app_id, use_llm=use_llm)
+        sentiment_summary = sentiment.score_all_reviews(
+            app_id, use_llm=use_llm, country=country
+        )
 
         # Rank-track the seed keywords plus any keyword already tracked for this
-        # app (custom-added keywords keep refreshing so velocity can accumulate).
+        # app+country (custom-added keywords keep refreshing so velocity accrues).
         tracked = list(dict.fromkeys(
             list(seed_keywords)
-            + [row["keyword"] for row in database.get_all_rankings(app_id)]
+            + [row["keyword"] for row in database.get_all_rankings(app_id, country)]
         ))
         rank_tracker.take_snapshot(app_id, tracked, country)
-        rank_tracker.compute_all_velocities(app_id)
+        rank_tracker.compute_all_velocities(app_id, country)
 
         seed_warning = (
             "LLM seed generation was unavailable (model busy) — used generic "
@@ -144,55 +156,84 @@ def health_check() -> dict:
 
 
 @app.get("/app/{app_id}")
-def get_app(app_id: int) -> dict:
+def get_app(app_id: int, country: Optional[str] = None) -> dict:
     """
-    Fetch metadata for one app.
+    Fetch metadata for one app, optionally with per-country metrics.
+
+    Args:
+        app_id:  iTunes numeric app ID.
+        country: If given, overlay that country's rating count / rating / version
+                 / description from the per-country snapshot.
+
+    Returns:
+        App metadata dict, plus a `countries` list of stores it has data for.
+    """
+    app_data = database.get_app(app_id)
+    if not app_data:
+        raise HTTPException(status_code=404, detail=f"App {app_id} not found")
+    if country:
+        stats = database.get_app_country_stats(app_id, country)
+        if stats:
+            for k in ("rating_count", "avg_rating", "price", "version",
+                      "description", "collected_at"):
+                if stats.get(k) is not None:
+                    app_data[k] = stats[k]
+            app_data["country"] = country
+    app_data["countries"] = database.get_app_countries(app_id)
+    return app_data
+
+
+@app.get("/app/{app_id}/countries")
+def get_app_countries(app_id: int) -> dict:
+    """
+    List the App Store countries an app has been collected for.
 
     Args:
         app_id: iTunes numeric app ID.
 
     Returns:
-        App metadata dict.
+        Dict with a sorted list of two-letter country codes.
     """
-    app_data = database.get_app(app_id)
-    if not app_data:
+    if not database.get_app(app_id):
         raise HTTPException(status_code=404, detail=f"App {app_id} not found")
-    return app_data
+    return {"app_id": app_id, "countries": database.get_app_countries(app_id)}
 
 
 @app.get("/app/{app_id}/reviews")
-def get_reviews(app_id: int) -> dict:
+def get_reviews(app_id: int, country: Optional[str] = None) -> dict:
     """
-    Fetch all stored reviews for an app.
+    Fetch stored reviews for an app, optionally scoped to one country.
 
     Args:
-        app_id: iTunes numeric app ID.
+        app_id:  iTunes numeric app ID.
+        country: If given, only reviews for that App Store country.
 
     Returns:
         Dict with total count and list of review dicts.
     """
     if not database.get_app(app_id):
         raise HTTPException(status_code=404, detail=f"App {app_id} not found")
-    reviews = database.get_reviews(app_id)
+    reviews = database.get_reviews(app_id, country)
     return {"app_id": app_id, "total": len(reviews), "reviews": reviews}
 
 
 @app.get("/app/{app_id}/sentiment")
-def get_sentiment(app_id: int) -> dict:
+def get_sentiment(app_id: int, country: Optional[str] = None) -> dict:
     """
-    Fetch pre-computed sentiment summary for an app.
+    Fetch pre-computed sentiment summary for an app, optionally per country.
 
     Does not recompute — reads already-scored reviews from database.
 
     Args:
-        app_id: iTunes numeric app ID.
+        app_id:  iTunes numeric app ID.
+        country: If given, only reviews for that App Store country.
 
     Returns:
         Sentiment summary with counts, percentages, and average rating.
     """
     if not database.get_app(app_id):
         raise HTTPException(status_code=404, detail=f"App {app_id} not found")
-    summary = sentiment.get_sentiment_summary(app_id)
+    summary = sentiment.get_sentiment_summary(app_id, country)
     if not summary:
         raise HTTPException(
             status_code=404,
@@ -202,30 +243,38 @@ def get_sentiment(app_id: int) -> dict:
 
 
 @app.get("/app/{app_id}/rankings")
-def get_rankings(app_id: int) -> dict:
+def get_rankings(app_id: int, country: Optional[str] = None) -> dict:
     """
     Fetch ranking summary with trends for all tracked keywords.
 
     Args:
-        app_id: iTunes numeric app ID.
+        app_id:  iTunes numeric app ID.
+        country: If given, only keywords tracked for that App Store country.
 
     Returns:
         Dict with ranking summary list including trend labels.
     """
     if not database.get_app(app_id):
         raise HTTPException(status_code=404, detail=f"App {app_id} not found")
-    summary = rank_tracker.get_ranking_summary(app_id)
+    summary = rank_tracker.get_ranking_summary(app_id, country)
     return {"app_id": app_id, "total": len(summary), "rankings": summary}
 
 
+def _resolve_country(app_data: dict, country: Optional[str]) -> str:
+    """Pick the explicit country if given, else the app's collected country."""
+    return country or app_data.get("country") or config.DEFAULT_COUNTRY
+
+
 @app.post("/app/{app_id}/rankings/track", dependencies=[Depends(verify_api_key)])
-def track_keyword(app_id: int, keyword: str) -> dict:
+def track_keyword(app_id: int, keyword: str, country: Optional[str] = None) -> dict:
     """
     Start rank-tracking a custom keyword for an app (one live snapshot).
 
     Args:
         app_id:  iTunes numeric app ID.
         keyword: Keyword to begin tracking (query param).
+        country: App Store country to track in (query param); defaults to the
+                 app's collected country.
 
     Returns:
         The refreshed ranking summary including the new keyword.
@@ -236,13 +285,14 @@ def track_keyword(app_id: int, keyword: str) -> dict:
     keyword = keyword.strip()
     if not keyword:
         raise HTTPException(status_code=400, detail="keyword must not be empty")
-    country = app_data.get("country") or config.DEFAULT_COUNTRY
-    summary = rank_tracker.track_keyword(app_id, keyword, country=country)
+    summary = rank_tracker.track_keyword(
+        app_id, keyword, country=_resolve_country(app_data, country)
+    )
     return {"app_id": app_id, "total": len(summary), "rankings": summary}
 
 
 @app.post("/app/{app_id}/rankings/refresh", dependencies=[Depends(verify_api_key)])
-def refresh_rankings(app_id: int) -> dict:
+def refresh_rankings(app_id: int, country: Optional[str] = None) -> dict:
     """
     Re-snapshot every tracked keyword for an app without a full collection.
 
@@ -250,7 +300,9 @@ def refresh_rankings(app_id: int) -> dict:
     synchronously and returns the updated summary.
 
     Args:
-        app_id: iTunes numeric app ID.
+        app_id:  iTunes numeric app ID.
+        country: App Store country to refresh (query param); defaults to the
+                 app's collected country.
 
     Returns:
         The refreshed ranking summary after re-snapshotting and recomputing velocity.
@@ -258,8 +310,9 @@ def refresh_rankings(app_id: int) -> dict:
     app_data = database.get_app(app_id)
     if not app_data:
         raise HTTPException(status_code=404, detail=f"App {app_id} not found")
-    country = app_data.get("country") or config.DEFAULT_COUNTRY
-    summary = rank_tracker.refresh_rankings(app_id, country=country)
+    summary = rank_tracker.refresh_rankings(
+        app_id, country=_resolve_country(app_data, country)
+    )
     return {"app_id": app_id, "total": len(summary), "rankings": summary}
 
 
@@ -301,19 +354,20 @@ def compare_competitor_ranks(
 
 
 @app.get("/app/{app_id}/competitors")
-def get_competitors(app_id: int) -> dict:
+def get_competitors(app_id: int, country: Optional[str] = None) -> dict:
     """
     Fetch all discovered competitor apps split by tier.
 
     Args:
-        app_id: iTunes numeric app ID.
+        app_id:  iTunes numeric app ID.
+        country: If given, only competitors discovered for that country.
 
     Returns:
         Dict with tier1 and tier2 competitor lists.
     """
     if not database.get_app(app_id):
         raise HTTPException(status_code=404, detail=f"App {app_id} not found")
-    all_competitors = database.get_competitors(app_id)
+    all_competitors = database.get_competitors(app_id, country)
     tier1 = [c for c in all_competitors if c.get("competitor_tier") == "tier1"]
     tier2 = [c for c in all_competitors if c.get("competitor_tier") == "tier2"]
     return {
@@ -325,7 +379,9 @@ def get_competitors(app_id: int) -> dict:
 
 
 @app.get("/app/{app_id}/recommendations")
-def get_recommendations(app_id: int, use_llm: bool = False) -> dict:
+def get_recommendations(
+    app_id: int, use_llm: bool = False, country: Optional[str] = None
+) -> dict:
     """
     Generate a full recommendation report for an app.
 
@@ -333,13 +389,16 @@ def get_recommendations(app_id: int, use_llm: bool = False) -> dict:
         app_id:  iTunes numeric app ID.
         use_llm: Whether to call LLM for competitor comparison and description
                  rewrite (query param, default False to avoid unexpected costs).
+        country: If given, scope reviews/rankings/competitors to that country.
 
     Returns:
         Full recommendation report with priority actions.
     """
     if not database.get_app(app_id):
         raise HTTPException(status_code=404, detail=f"App {app_id} not found")
-    return recommendations.generate_recommendations(app_id, use_llm=use_llm)
+    return recommendations.generate_recommendations(
+        app_id, use_llm=use_llm, country=country
+    )
 
 
 @app.post("/collect/{app_name}", dependencies=[Depends(verify_api_key)])

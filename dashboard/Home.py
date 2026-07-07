@@ -79,6 +79,10 @@ with left:
                 if result:
                     st.session_state.app_id   = result["app_id"]
                     st.session_state.app_name = result["app_name"]
+                    # Analysis pages open on the country just collected.
+                    st.session_state.active_country = result.get(
+                        "country", collect_country
+                    )
                     # Remember any seed-fallback warning, keyed by app_id, so the
                     # affected pages can surface it too.
                     st.session_state.setdefault("seed_warnings", {})
@@ -109,10 +113,16 @@ with right:
             if app_data:
                 st.session_state.app_id   = app_data["app_id"]
                 st.session_state.app_name = app_data["name"]
-                st.success(
-                    f"✅ Loaded **{app_data['name']}** "
-                    f"({country_label(app_data.get('country', ''))})"
+                collected = app_data.get("countries", [])
+                # Open on the picked country if that store has data, else the
+                # first collected one (pages only offer countries with data).
+                load_country = st.session_state.get("load_country")
+                st.session_state.active_country = (
+                    load_country if load_country in collected
+                    else (collected[0] if collected else None)
                 )
+                labels = ", ".join(country_label(c) for c in collected) or "no data yet"
+                st.success(f"✅ Loaded **{app_data['name']}** — collected for: {labels}")
 
 st.divider()
 

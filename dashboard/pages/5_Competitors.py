@@ -7,7 +7,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import streamlit as st
 import plotly.express as px
 import pandas as pd
-from utils import api_get, loading_overlay, require_app_id, seed_warning_banner
+from utils import (
+    active_country_selector,
+    api_get,
+    loading_overlay,
+    require_app_id,
+    seed_warning_banner,
+)
 
 st.set_page_config(page_title="Competitors", page_icon="🏆", layout="wide")
 st.title("🏆 Competitor Analysis")
@@ -17,6 +23,9 @@ if not app_id:
     st.stop()
 
 seed_warning_banner(app_id)
+
+country = active_country_selector(app_id)
+_p = {"country": country} if country else None
 
 with st.expander("ℹ️ How competitors are assessed"):
     st.markdown(
@@ -44,7 +53,7 @@ strongest appear first:
     )
 
 with loading_overlay("Loading competitors…"):
-    data = api_get(f"/app/{app_id}/competitors")
+    data = api_get(f"/app/{app_id}/competitors", params=_p)
 if not data:
     st.stop()
 
@@ -115,7 +124,7 @@ with tab2:
 # ── Rating comparison scatter ─────────────────────────────────────────────────
 st.divider()
 st.subheader("Rating vs Rating Count")
-target_app = api_get(f"/app/{app_id}")
+target_app = api_get(f"/app/{app_id}", params=_p)
 if target_app and "avg_rating" in df_all.columns:
     scatter_df = df_all[df_all["avg_rating"].notna() & df_all["rating_count"].notna()].copy()
     if not scatter_df.empty:

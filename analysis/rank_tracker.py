@@ -32,7 +32,7 @@ def take_snapshot(
         rank = scraper.fetch_keyword_ranking(keyword, app_id, country)
         # Persist every keyword — a NULL-rank row keeps a tracked-but-unranked
         # keyword visible ("Unranked") instead of silently disappearing.
-        database.save_ranking(app_id, keyword, rank, today)
+        database.save_ranking(app_id, keyword, rank, today, country)
         snapshot[keyword] = rank
         logger.info(f"Snapshot '{keyword}': rank={rank}")
     return snapshot
@@ -53,7 +53,7 @@ def track_keyword(
         The refreshed ranking summary for the app (one row per tracked keyword).
     """
     take_snapshot(app_id, [keyword], country)
-    return get_ranking_summary(app_id)
+    return get_ranking_summary(app_id, country)
 
 
 def refresh_rankings(app_id: int, country: str = config.DEFAULT_COUNTRY) -> list[dict]:
@@ -71,15 +71,17 @@ def refresh_rankings(app_id: int, country: str = config.DEFAULT_COUNTRY) -> list
         The refreshed ranking summary after re-snapshotting and recomputing velocity.
     """
     tracked = list(dict.fromkeys(
-        row["keyword"] for row in database.get_all_rankings(app_id)
+        row["keyword"] for row in database.get_all_rankings(app_id, country)
     ))
     take_snapshot(app_id, tracked, country)
-    compute_all_velocities(app_id)
-    logger.info(f"Refreshed rankings for {len(tracked)} keywords (app {app_id})")
-    return get_ranking_summary(app_id)
+    compute_all_velocities(app_id, country)
+    logger.info(f"Refreshed rankings for {len(tracked)} keywords (app {app_id}) [{country}]")
+    return get_ranking_summary(app_id, country)
 
 
-def compute_velocity(app_id: int, keyword: str) -> float | None:
+def compute_velocity(
+    app_id: int, keyword: str, country: str = config.DEFAULT_COUNTRY
+) -> float | None:
     """
     Compute the average daily rank change for one keyword over the recent window.
 
@@ -90,6 +92,7 @@ def compute_velocity(app_id: int, keyword: str) -> float | None:
     Args:
         app_id:  iTunes app ID.
         keyword: Keyword string.
+        country: App Store country to compute velocity for.
 
     Returns:
         Mean rank delta over the last RANK_VELOCITY_DAYS days,
@@ -97,7 +100,10 @@ def compute_velocity(app_id: int, keyword: str) -> float | None:
     """
     # Only ranked snapshots have a numeric position; skip NULL-rank rows
     # (keyword tracked but app not in the top results that day).
-    rows = [r for r in database.get_rankings(app_id, keyword) if r["rank"] is not None]
+    rows = [
+        r for r in database.get_rankings(app_id, keyword, country)
+        if r["rank"] is not None
+    ]
     if len(rows) < config.MIN_DAYS_FOR_VELOCITY:
         return None
 
@@ -113,37 +119,41 @@ def compute_velocity(app_id: int, keyword: str) -> float | None:
     return velocity
 
 
-def compute_all_velocities(app_id: int) -> dict:
+def compute_all_velocities(app_id: int, country: str = config.DEFAULT_COUNTRY) -> dict:
     """
     Compute velocity for every keyword tracked for this app.
 
     Args:
-        app_id: iTunes app ID.
+        app_id:  iTunes app ID.
+        country: App Store country to compute velocities for.
 
     Returns:
         Dict mapping keyword → velocity (None if insufficient data).
     """
-    all_rows = database.get_all_rankings(app_id)
+    all_rows = database.get_all_rankings(app_id, country)
     keywords = {row["keyword"] for row in all_rows}
-    velocities = {kw: compute_velocity(app_id, kw) for kw in keywords}
+    velocities = {kw: compute_velocity(app_id, kw, country) for kw in keywords}
     logger.info(f"Computed velocities for {len(velocities)} keywords")
     return velocities
 
 
-def detect_significant_changes(app_id: int, keywords: list[str]) -> list[dict]:
+def detect_significant_changes(
+    app_id: int, keywords: list[str], country: str = config.DEFAULT_COUNTRY
+) -> list[dict]:
     """
     Find keywords where rank shifted by more than RANK_ALERT_THRESHOLD positions.
 
     Args:
         app_id:   iTunes app ID.
         keywords: List of keyword strings to check.
+        country:  App Store country to check.
 
     Returns:
         List of alert dicts for keywords with significant rank changes.
     """
     alerts = []
     for keyword in keywords:
-        rows = database.get_rankings(app_id, keyword)
+        rows = database.get_rankings(app_id, keyword, country)
         if not rows:
             continue
         latest = rows[-1]
@@ -192,8 +202,11 @@ def compare_competitor_ranks(
     target_name = target_app["name"] if target_app else str(app_id)
     target_rank = scraper.fetch_keyword_ranking(keyword, app_id, country)
 
+    # Prefer competitors discovered for this country; fall back to the app's
+    # competitors from any country when comparing a store it wasn't collected for.
+    comps = database.get_competitors(app_id, country) or database.get_competitors(app_id)
     competitors = sorted(
-        database.get_competitors(app_id),
+        comps,
         key=lambda c: c.get("competitor_score") or 0.0,
         reverse=True,
     )[:max_competitors]
@@ -220,17 +233,18 @@ def compare_competitor_ranks(
     }
 
 
-def get_ranking_summary(app_id: int) -> list[dict]:
+def get_ranking_summary(app_id: int, country: str | None = None) -> list[dict]:
     """
     Return the latest rank, delta, velocity, and trend for every tracked keyword.
 
     Args:
-        app_id: iTunes app ID.
+        app_id:  iTunes app ID.
+        country: If given, only keywords tracked for that App Store country.
 
     Returns:
         List of summary dicts, one per tracked keyword.
     """
-    all_rows = database.get_all_rankings(app_id)
+    all_rows = database.get_all_rankings(app_id, country)
 
     latest_by_keyword: dict[str, dict] = {}
     for row in all_rows:

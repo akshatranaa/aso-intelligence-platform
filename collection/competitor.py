@@ -162,7 +162,7 @@ def discover_competitors(
         app_data["competitor_score"] = score
         app_data["competitor_tier"] = tier
         database.save_app(app_data)
-        database.save_competitor(target_app_id, app_data["app_id"], tier, score)
+        database.save_competitor(target_app_id, app_data["app_id"], tier, score, country)
         competitors.append(_build_entry(app_data, score, tier))
 
     return sorted(competitors, key=lambda x: x["score"], reverse=True)

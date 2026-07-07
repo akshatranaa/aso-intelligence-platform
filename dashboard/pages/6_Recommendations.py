@@ -5,7 +5,13 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import streamlit as st
-from utils import api_get, loading_overlay, priority_badge, require_app_id
+from utils import (
+    active_country_selector,
+    api_get,
+    loading_overlay,
+    priority_badge,
+    require_app_id,
+)
 
 st.set_page_config(page_title="Recommendations", page_icon="⭐", layout="wide")
 st.title("⭐ Recommendations")
@@ -14,16 +20,21 @@ app_id = require_app_id()
 if not app_id:
     st.stop()
 
+country = active_country_selector(app_id)
+_p = {"country": country} if country else {}
+
 # ── LLM toggle ────────────────────────────────────────────────────────────────
 use_llm = st.toggle(
     "Use LLM for deeper analysis (costs API credits)",
     value=False,
     help="Enabling this sends data to the AI model for richer insights.",
 )
-suffix = "?use_llm=true" if use_llm else "?use_llm=false"
 
 with loading_overlay("Generating recommendations…"):
-    data = api_get(f"/app/{app_id}/recommendations{suffix}")
+    data = api_get(
+        f"/app/{app_id}/recommendations",
+        params={"use_llm": str(use_llm).lower(), **_p},
+    )
 
 if not data:
     st.stop()

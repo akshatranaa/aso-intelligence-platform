@@ -12,13 +12,16 @@ from analysis import llm_analyst, rank_tracker, sentiment
 logger = logging.getLogger(__name__)
 
 
-def generate_recommendations(app_id: int, use_llm: bool = True) -> dict:
+def generate_recommendations(
+    app_id: int, use_llm: bool = True, country: str | None = None
+) -> dict:
     """
     Master function — produce a full recommendation report for one app.
 
     Args:
         app_id:  iTunes app ID of the target app.
         use_llm: Whether to call the LLM for competitor comparison and description rewrite.
+        country: If given, scope reviews/rankings/competitors to that country.
 
     Returns:
         Dict with keyword, sentiment, competitor, and description recommendations.
@@ -28,9 +31,9 @@ def generate_recommendations(app_id: int, use_llm: bool = True) -> dict:
         logger.error(f"No app found for app_id {app_id}")
         return {}
 
-    keyword_rec      = _get_keyword_recommendations(app_id)
-    sentiment_rec    = _get_sentiment_recommendations(app_id, use_llm=use_llm)
-    competitor_rec   = _get_competitor_recommendations(app_id, use_llm=use_llm)
+    keyword_rec      = _get_keyword_recommendations(app_id, country)
+    sentiment_rec    = _get_sentiment_recommendations(app_id, use_llm=use_llm, country=country)
+    competitor_rec   = _get_competitor_recommendations(app_id, use_llm=use_llm, country=country)
     description      = _suggest_description(app_id, use_llm=use_llm)
     priority_actions = _build_priority_actions(keyword_rec, sentiment_rec, competitor_rec)
 
@@ -62,19 +65,20 @@ def _best_score(kw: dict) -> float:
     return kw.get("revised_opportunity") or kw.get("proxy_opportunity") or 0.0
 
 
-def _get_keyword_recommendations(app_id: int) -> dict:
+def _get_keyword_recommendations(app_id: int, country: str | None = None) -> dict:
     """
     Classify keywords into actionable buckets based on opportunity score and rank.
 
     Args:
-        app_id: iTunes app ID.
+        app_id:  iTunes app ID.
+        country: If given, scope the ranking summary to that country.
 
     Returns:
         Dict with prioritise, defend, target_gaps, and drop keyword lists.
     """
     keywords = database.get_keywords(app_id)
     ranking_summary = {
-        r["keyword"]: r for r in rank_tracker.get_ranking_summary(app_id)
+        r["keyword"]: r for r in rank_tracker.get_ranking_summary(app_id, country)
     }
 
     prioritise, defend, target_gaps, drop = [], [], [], []
@@ -103,7 +107,9 @@ def _get_keyword_recommendations(app_id: int) -> dict:
     }
 
 
-def _get_sentiment_recommendations(app_id: int, use_llm: bool = True) -> dict:
+def _get_sentiment_recommendations(
+    app_id: int, use_llm: bool = True, country: str | None = None
+) -> dict:
     """
     Build sentiment-based recommendations from review data.
 
@@ -113,15 +119,16 @@ def _get_sentiment_recommendations(app_id: int, use_llm: bool = True) -> dict:
     Args:
         app_id:  iTunes app ID.
         use_llm: Whether to run LLM theme extraction on top reviews.
+        country: If given, scope reviews/summary to that country.
 
     Returns:
         Dict with sentiment summary, priority fix, top complaints, and top praise.
     """
-    reviews = database.get_reviews(app_id)
+    reviews = database.get_reviews(app_id, country)
     if not reviews:
         return {"error": "No reviews found"}
 
-    summary      = sentiment.get_sentiment_summary(app_id) or {}
+    summary      = sentiment.get_sentiment_summary(app_id, country) or {}
     llm_analysis = None
 
     if use_llm:
@@ -144,19 +151,22 @@ def _get_sentiment_recommendations(app_id: int, use_llm: bool = True) -> dict:
     }
 
 
-def _get_competitor_recommendations(app_id: int, use_llm: bool = True) -> dict:
+def _get_competitor_recommendations(
+    app_id: int, use_llm: bool = True, country: str | None = None
+) -> dict:
     """
     Compare target app against top tier1 competitor and surface description gaps.
 
     Args:
         app_id:  iTunes app ID of the target app.
         use_llm: Whether to call the LLM for metadata comparison.
+        country: If given, scope competitors to that country.
 
     Returns:
         Dict with competitor analysis, missing keywords, and recommendation.
     """
     target_app  = database.get_app(app_id)
-    competitors = database.get_competitors(app_id)
+    competitors = database.get_competitors(app_id, country)
     tier1       = [c for c in competitors if c.get("competitor_tier") == "tier1"]
 
     if not tier1:

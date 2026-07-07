@@ -166,6 +166,96 @@ def create_tables() -> None:
             )
         """)
     logger.info("All database tables created (or already exist)")
+    migrate()
+
+
+def migrate() -> None:
+    """
+    Apply idempotent schema migrations for multi-country support.
+
+    Adds a `country` dimension to reviews, rankings, and competitors, backfills
+    existing rows from the app's stored country, swaps the unique constraints to
+    include country, and creates the per-country app_country_stats table (so each
+    (app_id, country) pair is its own analysable entity). Safe to run repeatedly.
+    """
+    with get_connection() as conn:
+        cur = conn.cursor()
+
+        # 1. Add the country column to the per-app data tables.
+        cur.execute("ALTER TABLE reviews     ADD COLUMN IF NOT EXISTS country TEXT")
+        cur.execute("ALTER TABLE rankings    ADD COLUMN IF NOT EXISTS country TEXT")
+        cur.execute("ALTER TABLE competitors ADD COLUMN IF NOT EXISTS country TEXT")
+
+        # 2. Backfill existing rows from the app's stored country (so pre-migration
+        #    data keeps working, attributed to whatever it was collected as).
+        cur.execute(
+            "UPDATE reviews r SET country = COALESCE("
+            "(SELECT a.country FROM apps a WHERE a.app_id = r.app_id), 'us') "
+            "WHERE r.country IS NULL"
+        )
+        cur.execute(
+            "UPDATE rankings rk SET country = COALESCE("
+            "(SELECT a.country FROM apps a WHERE a.app_id = rk.app_id), 'us') "
+            "WHERE rk.country IS NULL"
+        )
+        cur.execute(
+            "UPDATE competitors c SET country = COALESCE("
+            "(SELECT a.country FROM apps a WHERE a.app_id = c.target_app_id), 'us') "
+            "WHERE c.country IS NULL"
+        )
+
+        # 3. Swap the unique constraints to include country (backfill above can't
+        #    create duplicates — every existing app had a single country).
+        cur.execute(
+            "ALTER TABLE reviews DROP CONSTRAINT IF EXISTS "
+            "reviews_app_id_review_date_author_key"
+        )
+        cur.execute(
+            "DO $$ BEGIN "
+            "IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+            "WHERE conname='reviews_app_country_date_author_key') THEN "
+            "ALTER TABLE reviews ADD CONSTRAINT reviews_app_country_date_author_key "
+            "UNIQUE (app_id, country, review_date, author); END IF; END $$;"
+        )
+        cur.execute(
+            "ALTER TABLE competitors DROP CONSTRAINT IF EXISTS "
+            "competitors_target_app_id_competitor_app_id_key"
+        )
+        cur.execute(
+            "DO $$ BEGIN "
+            "IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+            "WHERE conname='competitors_target_country_competitor_key') THEN "
+            "ALTER TABLE competitors ADD CONSTRAINT competitors_target_country_competitor_key "
+            "UNIQUE (target_app_id, country, competitor_app_id); END IF; END $$;"
+        )
+
+        # 4. Per-country app metadata — each (app_id, country) is its own entity.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS app_country_stats (
+                app_id        BIGINT NOT NULL,
+                country       TEXT NOT NULL,
+                name          TEXT,
+                rating_count  INTEGER,
+                avg_rating    REAL,
+                price         REAL,
+                version       TEXT,
+                description   TEXT,
+                collected_at  TEXT,
+                PRIMARY KEY (app_id, country),
+                FOREIGN KEY (app_id) REFERENCES apps(app_id)
+            )
+        """)
+        # Backfill a stats row for every existing app from its current metadata.
+        cur.execute("""
+            INSERT INTO app_country_stats
+                (app_id, country, name, rating_count, avg_rating, price,
+                 version, description, collected_at)
+            SELECT app_id, country, name, rating_count, avg_rating, price,
+                   version, description, collected_at
+            FROM apps
+            ON CONFLICT (app_id, country) DO NOTHING
+        """)
+    logger.info("Multi-country migration applied (idempotent)")
 
 
 def save_app(app_dict: dict) -> None:
@@ -229,6 +319,11 @@ def save_app(app_dict: dict) -> None:
                 collected_at,
             ),
         )
+    # Also snapshot this app's metadata for its country, so each (app, country)
+    # keeps its own rating count / version / description independently.
+    stats = dict(app_dict)
+    stats["collected_at"] = collected_at
+    save_app_country_stats(stats)
 
 
 def save_reviews(reviews_list: list[dict]) -> int:
@@ -250,14 +345,15 @@ def save_reviews(reviews_list: list[dict]) -> int:
             cursor.execute(
                 """
                 INSERT INTO reviews (
-                    app_id, review_text, rating, review_date,
+                    app_id, country, review_text, rating, review_date,
                     author, sentiment_score, sentiment_label,
                     theme_cluster, collected_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (app_id, review_date, author) DO NOTHING
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (app_id, country, review_date, author) DO NOTHING
                 """,
                 (
                     review["app_id"],
+                    review.get("country", config.DEFAULT_COUNTRY),
                     review.get("review_text"),
                     review.get("rating"),
                     review.get("review_date"),
@@ -272,7 +368,10 @@ def save_reviews(reviews_list: list[dict]) -> int:
     return inserted_count
 
 
-def save_ranking(app_id: int, keyword: str, rank: int | None, date: str) -> None:
+def save_ranking(
+    app_id: int, keyword: str, rank: int | None, date: str,
+    country: str = config.DEFAULT_COUNTRY,
+) -> None:
     """
     Insert one ranking row, computing rank_delta against the previous record.
 
@@ -289,23 +388,25 @@ def save_ranking(app_id: int, keyword: str, rank: int | None, date: str) -> None
         keyword: Keyword that was searched.
         rank:    Position found (1-indexed; 1 = top result), or None if unranked.
         date:    Date string in YYYY-MM-DD format.
+        country: App Store country the rank was fetched in.
     """
     with get_connection() as conn:
         cursor = conn.cursor()
-        # Replace any snapshot already recorded for this keyword today.
+        # Replace any snapshot already recorded for this keyword+country today.
         cursor.execute(
-            "DELETE FROM rankings WHERE app_id = %s AND keyword = %s AND date = %s",
-            (app_id, keyword, date),
+            "DELETE FROM rankings WHERE app_id = %s AND keyword = %s "
+            "AND date = %s AND country = %s",
+            (app_id, keyword, date, country),
         )
         # rank_delta is measured against the most recent earlier day (None when
         # unranked, when there is no prior history, or when the last day was NULL).
         cursor.execute(
             """
             SELECT rank FROM rankings
-            WHERE app_id = %s AND keyword = %s
+            WHERE app_id = %s AND keyword = %s AND country = %s
             ORDER BY date DESC LIMIT 1
             """,
-            (app_id, keyword),
+            (app_id, keyword, country),
         )
         prev = cursor.fetchone()
         yesterday_rank = prev["rank"] if prev else None
@@ -316,13 +417,14 @@ def save_ranking(app_id: int, keyword: str, rank: int | None, date: str) -> None
         )
         cursor.execute(
             """
-            INSERT INTO rankings (app_id, keyword, rank, date, rank_delta)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO rankings (app_id, keyword, rank, date, rank_delta, country)
+            VALUES (%s, %s, %s, %s, %s, %s)
             """,
-            (app_id, keyword, rank, date, rank_delta),
+            (app_id, keyword, rank, date, rank_delta, country),
         )
     logger.info(
-        f"Saved ranking: app={app_id} keyword='{keyword}' rank={rank} delta={rank_delta}"
+        f"Saved ranking: app={app_id} keyword='{keyword}' rank={rank} "
+        f"delta={rank_delta} [{country}]"
     )
 
 
@@ -357,64 +459,84 @@ def get_all_apps() -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def get_reviews(app_id: int) -> list[dict]:
+def get_reviews(app_id: int, country: str | None = None) -> list[dict]:
     """
-    Fetch all reviews for a given app.
+    Fetch reviews for a given app, optionally scoped to one country.
 
     Args:
-        app_id: iTunes numeric app ID.
+        app_id:  iTunes numeric app ID.
+        country: If given, only reviews collected for that App Store country.
 
     Returns:
         List of review dicts.
     """
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM reviews WHERE app_id = %s", (app_id,))
+        if country is None:
+            cursor.execute("SELECT * FROM reviews WHERE app_id = %s", (app_id,))
+        else:
+            cursor.execute(
+                "SELECT * FROM reviews WHERE app_id = %s AND country = %s",
+                (app_id, country),
+            )
         rows = cursor.fetchall()
     return [dict(row) for row in rows]
 
 
-def get_all_rankings(app_id: int) -> list[dict]:
+def get_all_rankings(app_id: int, country: str | None = None) -> list[dict]:
     """
     Fetch all ranking rows for an app across every keyword.
 
     Args:
-        app_id: iTunes numeric app ID.
+        app_id:  iTunes numeric app ID.
+        country: If given, only rankings for that App Store country.
 
     Returns:
         List of ranking dicts ordered oldest-first.
     """
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT * FROM rankings WHERE app_id = %s ORDER BY date ASC",
-            (app_id,),
-        )
+        if country is None:
+            cursor.execute(
+                "SELECT * FROM rankings WHERE app_id = %s ORDER BY date ASC",
+                (app_id,),
+            )
+        else:
+            cursor.execute(
+                "SELECT * FROM rankings WHERE app_id = %s AND country = %s "
+                "ORDER BY date ASC",
+                (app_id, country),
+            )
         rows = cursor.fetchall()
     return [dict(row) for row in rows]
 
 
-def get_rankings(app_id: int, keyword: str) -> list[dict]:
+def get_rankings(app_id: int, keyword: str, country: str | None = None) -> list[dict]:
     """
     Fetch all ranking rows for an app+keyword pair, ordered by date ascending.
 
     Args:
         app_id:  iTunes numeric app ID.
         keyword: Keyword string.
+        country: If given, only rankings for that App Store country.
 
     Returns:
         List of ranking dicts ordered oldest-first.
     """
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT * FROM rankings
-            WHERE app_id = %s AND keyword = %s
-            ORDER BY date ASC
-            """,
-            (app_id, keyword),
-        )
+        if country is None:
+            cursor.execute(
+                "SELECT * FROM rankings WHERE app_id = %s AND keyword = %s "
+                "ORDER BY date ASC",
+                (app_id, keyword),
+            )
+        else:
+            cursor.execute(
+                "SELECT * FROM rankings WHERE app_id = %s AND keyword = %s "
+                "AND country = %s ORDER BY date ASC",
+                (app_id, keyword, country),
+            )
         rows = cursor.fetchall()
     return [dict(row) for row in rows]
 
@@ -641,7 +763,8 @@ def get_competitor_apps() -> list[dict]:
 
 
 def save_competitor(
-    target_app_id: int, competitor_app_id: int, tier: str, score: float
+    target_app_id: int, competitor_app_id: int, tier: str, score: float,
+    country: str = config.DEFAULT_COUNTRY,
 ) -> None:
     """
     Record (or update) that one app is a scored competitor of a target app.
@@ -651,24 +774,26 @@ def save_competitor(
         competitor_app_id: The competing app.
         tier:              "tier1" or "tier2".
         score:             Competitor score in [0.0, 1.0].
+        country:           App Store country the competitor was discovered in.
     """
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
             INSERT INTO competitors (
-                target_app_id, competitor_app_id, tier, score, discovered_at
-            ) VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (target_app_id, competitor_app_id) DO UPDATE SET
+                target_app_id, competitor_app_id, tier, score, discovered_at, country
+            ) VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (target_app_id, country, competitor_app_id) DO UPDATE SET
                 tier          = EXCLUDED.tier,
                 score         = EXCLUDED.score,
                 discovered_at = EXCLUDED.discovered_at
             """,
-            (target_app_id, competitor_app_id, tier, score, datetime.now().isoformat()),
+            (target_app_id, competitor_app_id, tier, score,
+             datetime.now().isoformat(), country),
         )
 
 
-def get_competitors(target_app_id: int) -> list[dict]:
+def get_competitors(target_app_id: int, country: str | None = None) -> list[dict]:
     """
     Fetch competitor apps discovered specifically for one target app.
 
@@ -678,22 +803,35 @@ def get_competitors(target_app_id: int) -> list[dict]:
 
     Args:
         target_app_id: The app to fetch competitors for.
+        country:       If given, only competitors discovered for that country.
 
     Returns:
         List of competitor app dicts, sorted by score descending.
     """
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT a.*, c.tier, c.score
-            FROM competitors c
-            JOIN apps a ON a.app_id = c.competitor_app_id
-            WHERE c.target_app_id = %s
-            ORDER BY c.score DESC
-            """,
-            (target_app_id,),
-        )
+        if country is None:
+            cursor.execute(
+                """
+                SELECT a.*, c.tier, c.score
+                FROM competitors c
+                JOIN apps a ON a.app_id = c.competitor_app_id
+                WHERE c.target_app_id = %s
+                ORDER BY c.score DESC
+                """,
+                (target_app_id,),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT a.*, c.tier, c.score
+                FROM competitors c
+                JOIN apps a ON a.app_id = c.competitor_app_id
+                WHERE c.target_app_id = %s AND c.country = %s
+                ORDER BY c.score DESC
+                """,
+                (target_app_id, country),
+            )
         rows = cursor.fetchall()
     result = []
     for row in rows:
@@ -702,6 +840,85 @@ def get_competitors(target_app_id: int) -> list[dict]:
         d["competitor_score"] = d.pop("score")
         result.append(d)
     return result
+
+
+def get_app_countries(app_id: int) -> list[str]:
+    """
+    Return the App Store countries this app has been collected for.
+
+    Args:
+        app_id: iTunes numeric app ID.
+
+    Returns:
+        Sorted list of two-letter country codes (empty if never collected).
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT country FROM app_country_stats WHERE app_id = %s ORDER BY country",
+            (app_id,),
+        )
+        rows = cursor.fetchall()
+    return [row["country"] for row in rows]
+
+
+def save_app_country_stats(app_dict: dict) -> None:
+    """
+    Upsert the per-country metadata snapshot for an app (one row per country).
+
+    Args:
+        app_dict: App metadata dict with app_id, country, and the metric fields.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO app_country_stats
+                (app_id, country, name, rating_count, avg_rating, price,
+                 version, description, collected_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (app_id, country) DO UPDATE SET
+                name         = EXCLUDED.name,
+                rating_count = EXCLUDED.rating_count,
+                avg_rating   = EXCLUDED.avg_rating,
+                price        = EXCLUDED.price,
+                version      = EXCLUDED.version,
+                description  = EXCLUDED.description,
+                collected_at = EXCLUDED.collected_at
+            """,
+            (
+                app_dict["app_id"],
+                app_dict.get("country", config.DEFAULT_COUNTRY),
+                app_dict.get("name"),
+                app_dict.get("rating_count"),
+                app_dict.get("avg_rating"),
+                app_dict.get("price"),
+                app_dict.get("version"),
+                app_dict.get("description"),
+                app_dict.get("collected_at", datetime.now().isoformat()),
+            ),
+        )
+
+
+def get_app_country_stats(app_id: int, country: str) -> dict | None:
+    """
+    Fetch the per-country metadata snapshot for an app.
+
+    Args:
+        app_id:  iTunes numeric app ID.
+        country: Two-letter App Store country code.
+
+    Returns:
+        Dict of the per-country metrics, or None if not present.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM app_country_stats WHERE app_id = %s AND country = %s",
+            (app_id, country),
+        )
+        row = cursor.fetchone()
+    return dict(row) if row else None
 
 
 def get_target_app() -> dict | None:

@@ -5,7 +5,13 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import streamlit as st
-from utils import api_get, loading_overlay, priority_badge, require_app_id
+from utils import (
+    active_country_selector,
+    api_get,
+    loading_overlay,
+    priority_badge,
+    require_app_id,
+)
 
 st.set_page_config(page_title="Overview", page_icon="🏠", layout="wide")
 st.title("🏠 Overview")
@@ -14,9 +20,12 @@ app_id = require_app_id()
 if not app_id:
     st.stop()
 
+country = active_country_selector(app_id)
+_p = {"country": country} if country else None
+
 # ── App metadata ──────────────────────────────────────────────────────────────
 with loading_overlay("Loading overview…"):
-    app_data = api_get(f"/app/{app_id}")
+    app_data = api_get(f"/app/{app_id}", params=_p)
 if not app_data:
     st.stop()
 
@@ -34,7 +43,7 @@ c4.metric("Min iOS",       app_data.get("min_os_version", "N/A"))
 st.divider()
 
 # ── Sentiment snapshot ────────────────────────────────────────────────────────
-sentiment = api_get(f"/app/{app_id}/sentiment")
+sentiment = api_get(f"/app/{app_id}/sentiment", params=_p)
 if sentiment:
     st.subheader("💬 Sentiment Snapshot")
     s1, s2, s3, s4 = st.columns(4)
@@ -47,7 +56,7 @@ if sentiment:
     st.divider()
 
 # ── Ranking snapshot ──────────────────────────────────────────────────────────
-rankings = api_get(f"/app/{app_id}/rankings")
+rankings = api_get(f"/app/{app_id}/rankings", params=_p)
 if rankings and rankings.get("rankings"):
     st.subheader("📈 Rankings Snapshot")
     rows = rankings["rankings"][:5]
@@ -64,7 +73,10 @@ if rankings and rankings.get("rankings"):
 
 # ── Priority actions ──────────────────────────────────────────────────────────
 st.subheader("⭐ Priority Actions")
-recommendations = api_get(f"/app/{app_id}/recommendations?use_llm=false")
+recommendations = api_get(
+    f"/app/{app_id}/recommendations",
+    params={"use_llm": "false", **(_p or {})},
+)
 if recommendations and recommendations.get("priority_actions"):
     for action in recommendations["priority_actions"]:
         badge = priority_badge(action.get("priority", ""))
