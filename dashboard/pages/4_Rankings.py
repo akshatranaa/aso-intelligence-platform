@@ -7,7 +7,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import streamlit as st
 import plotly.express as px
 import pandas as pd
-from utils import api_get, api_post, loading_overlay, trend_badge, require_app_id
+from utils import (
+    api_get,
+    api_post,
+    country_label,
+    country_selectbox,
+    loading_overlay,
+    trend_badge,
+    require_app_id,
+)
 
 st.set_page_config(page_title="Rankings", page_icon="📈", layout="wide")
 st.title("📈 Keyword Rankings")
@@ -142,14 +150,23 @@ st.divider()
 
 # ── Competitor rank comparison ────────────────────────────────────────────────
 st.subheader("🆚 Competitor Rank Comparison")
-st.caption("See where your top competitors rank for a keyword (lower rank = better).")
+st.caption(
+    "See where your top competitors rank for a keyword — in any country, "
+    "independent of where the app was collected (lower rank = better)."
+)
+
+# Default the country to whatever the app was collected for (but let it change).
+app_meta = api_get(f"/app/{app_id}") or {}
+default_country = (app_meta.get("country") or "in").lower()
 
 kw_options = [r["keyword"] for r in rankings]
-comp_col1, comp_col2 = st.columns([3, 1])
+comp_col1, comp_col2 = st.columns([2, 1])
 with comp_col1:
-    sel_kw = st.selectbox("Keyword to compare", kw_options, label_visibility="collapsed")
+    sel_kw = st.selectbox("Keyword to compare", kw_options)
 with comp_col2:
-    do_compare = st.button("Compare competitors", use_container_width=True)
+    compare_country = country_selectbox(
+        "Country", key="compare_country", default=default_country
+    )
 
 n_competitors = st.slider(
     "How many competitors to compare (top N by popularity)",
@@ -158,15 +175,20 @@ n_competitors = st.slider(
     value=5,
     help="Each competitor adds ~1s of live lookup time (25 ≈ half a minute).",
 )
+do_compare = st.button("Compare competitors", use_container_width=True)
 
 if do_compare and sel_kw:
     with loading_overlay(
-        f"Looking up ranks for '{sel_kw}' across {n_competitors} competitors… "
-        f"(~{n_competitors + 1}s)"
+        f"Looking up ranks for '{sel_kw}' across {n_competitors} competitors "
+        f"in {country_label(compare_country)}… (~{n_competitors + 1}s)"
     ):
         cmp = api_get(
             f"/app/{app_id}/rankings/compare",
-            params={"keyword": sel_kw, "n": n_competitors},
+            params={
+                "keyword": sel_kw,
+                "n": n_competitors,
+                "country": compare_country,
+            },
         )
     if cmp:
         rows = [{"App": f"{cmp['target']['name']} (you)", "Rank": cmp["target"]["rank"]}]
