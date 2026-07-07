@@ -180,6 +180,28 @@ def health_check() -> dict:
     return {"status": "ok", "timestamp": datetime.now().isoformat()}
 
 
+@app.get("/apps")
+def list_apps() -> dict:
+    """
+    List all collected target apps (for the frontend app switcher).
+
+    Returns:
+        Dict with a list of {app_id, name, category, countries} entries,
+        sorted by name.
+    """
+    targets = [a for a in database.get_all_apps() if a.get("is_target_app") == 1]
+    apps = [
+        {
+            "app_id":    a["app_id"],
+            "name":      a["name"],
+            "category":  a.get("category"),
+            "countries": database.get_app_countries(a["app_id"]),
+        }
+        for a in sorted(targets, key=lambda a: (a.get("name") or "").lower())
+    ]
+    return {"total": len(apps), "apps": apps}
+
+
 @app.get("/app/{app_id}")
 def get_app(app_id: int, country: Optional[str] = None) -> dict:
     """
