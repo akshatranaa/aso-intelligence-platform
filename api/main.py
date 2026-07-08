@@ -484,6 +484,32 @@ def get_competitors(app_id: int, country: Optional[str] = None) -> dict:
     }
 
 
+@app.delete(
+    "/app/{app_id}/competitors/{competitor_app_id}",
+    dependencies=[Depends(verify_api_key)],
+)
+def remove_competitor(
+    app_id: int, competitor_app_id: int, country: Optional[str] = None
+) -> dict:
+    """
+    Remove a competitor from an app's list (and purge it if it's orphaned junk).
+
+    Args:
+        app_id:            iTunes numeric app ID of the target.
+        competitor_app_id: The competitor to remove.
+        country:           App Store country (query param); defaults to the app's.
+
+    Returns:
+        Dict with the removed id and whether its app row was fully purged.
+    """
+    app_data = database.get_app(app_id)
+    if not app_data:
+        raise HTTPException(status_code=404, detail=f"App {app_id} not found")
+    resolved = _resolve_country(app_data, country)
+    purged = database.delete_competitor(app_id, competitor_app_id, resolved)
+    return {"app_id": app_id, "removed": competitor_app_id, "purged": purged}
+
+
 @app.get("/app/{app_id}/recommendations")
 def get_recommendations(
     app_id: int, use_llm: bool = False, country: Optional[str] = None

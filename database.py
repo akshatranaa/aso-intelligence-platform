@@ -884,6 +884,67 @@ def delete_ranking_keyword(app_id: int, keyword: str, country: str) -> int:
     return deleted
 
 
+def delete_competitor(
+    target_app_id: int, competitor_app_id: int, country: str
+) -> bool:
+    """
+    Remove a competitor from a target's list, purging the app row if orphaned.
+
+    Always deletes the competitors join row for this target+country. Then, if the
+    competitor app is safe to fully remove — it is not a target app and is not
+    referenced by any other competitor relationship, review, ranking, or keyword —
+    its apps and app_country_stats rows are deleted too, so junk competitors leave
+    the database entirely. Shared apps (e.g. one that is also a target, or a
+    competitor of another app) keep their row; only the relationship is removed.
+
+    Args:
+        target_app_id:     The app the competitor belongs to.
+        competitor_app_id: The competitor to remove.
+        country:           App Store country the relationship was discovered for.
+
+    Returns:
+        True if the competitor's app row was fully purged, False if only the
+        relationship was removed (the app is still referenced elsewhere).
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM competitors WHERE target_app_id = %s "
+            "AND competitor_app_id = %s AND country = %s",
+            (target_app_id, competitor_app_id, country),
+        )
+
+        # Only purge the app row if nothing else references it.
+        cursor.execute(
+            "SELECT is_target_app FROM apps WHERE app_id = %s", (competitor_app_id,)
+        )
+        row = cursor.fetchone()
+        if not row or row["is_target_app"] == 1:
+            return False
+
+        references = [
+            ("competitors", "competitor_app_id"),
+            ("competitors", "target_app_id"),
+            ("reviews", "app_id"),
+            ("rankings", "app_id"),
+            ("keywords", "app_id"),
+        ]
+        for table, column in references:
+            cursor.execute(
+                f"SELECT 1 FROM {table} WHERE {column} = %s LIMIT 1",
+                (competitor_app_id,),
+            )
+            if cursor.fetchone():
+                return False
+
+        cursor.execute(
+            "DELETE FROM app_country_stats WHERE app_id = %s", (competitor_app_id,)
+        )
+        cursor.execute("DELETE FROM apps WHERE app_id = %s", (competitor_app_id,))
+    logger.info(f"Purged orphaned competitor app {competitor_app_id}")
+    return True
+
+
 def get_competitors_last_discovered(target_app_id: int, country: str) -> str | None:
     """
     Return when competitors were most recently discovered for a target+country.

@@ -3,11 +3,13 @@
 /** Competitors — AI-judged competitor list with scores, tiers, and charts. */
 
 import { useMemo, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Bar,
   BarChart,
   CartesianGrid,
   Cell,
+  LabelList,
   ResponsiveContainer,
   Scatter,
   ScatterChart,
@@ -16,19 +18,160 @@ import {
   YAxis,
   ZAxis,
 } from "recharts";
+import { Loader2, Trash2 } from "lucide-react";
+import { apiDelete } from "@/lib/api";
 import { usePageContext } from "@/lib/context";
-import { useApp, useCompetitors } from "@/lib/hooks";
-import { countryLabel } from "@/lib/countries";
+import { useApp, useCompare, useCompetitors, useRankings } from "@/lib/hooks";
+import { COUNTRIES, countryLabel } from "@/lib/countries";
 import type { Competitor } from "@/lib/types";
 import {
+  Button,
   Card,
   EmptyState,
   MetricCard,
   PageTitle,
   SectionTitle,
+  Select,
   Spinner,
   cn,
 } from "@/components/ui";
+
+function CompareCard({
+  appId,
+  country,
+}: {
+  appId: number;
+  country?: string;
+}) {
+  const { data: rankData } = useRankings(appId, country);
+  const kwOptions = (rankData?.rankings ?? []).map((r) => r.keyword);
+
+  const [keyword, setKeyword] = useState<string | null>(null);
+  const [cmpCountry, setCmpCountry] = useState<string | undefined>(undefined);
+  const [n, setN] = useState(5);
+  const effKeyword = keyword ?? kwOptions[0] ?? null;
+  const effCountry = cmpCountry ?? country ?? "in";
+  const compare = useCompare(appId, effKeyword, n, effCountry);
+
+  const chart = compare.data
+    ? [
+        {
+          name: `${compare.data.target.name} (you)`,
+          rank: compare.data.target.rank,
+          fill: "#4f46e5",
+        },
+        ...compare.data.competitors.map((c) => ({
+          name: c.name,
+          rank: c.rank,
+          fill: "#a5b4fc",
+        })),
+      ].filter((d) => d.rank != null)
+    : [];
+
+  return (
+    <Card className="mb-6">
+      <SectionTitle>🆚 Competitor rank comparison</SectionTitle>
+      <p className="mb-4 text-xs text-neutral-500">
+        Live lookup: where do your top competitors rank for a keyword, in any
+        country? Lower rank = better. ~1s per competitor.
+      </p>
+      {kwOptions.length === 0 ? (
+        <EmptyState>Track some keywords on the Rankings page first.</EmptyState>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-end gap-3">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-neutral-500">
+                Keyword
+              </label>
+              <Select
+                className="w-52"
+                value={effKeyword ?? ""}
+                onChange={(e) => setKeyword(e.target.value)}
+              >
+                {kwOptions.map((k) => (
+                  <option key={k} value={k}>
+                    {k}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-neutral-500">
+                Country
+              </label>
+              <Select
+                className="w-44"
+                value={effCountry}
+                onChange={(e) => setCmpCountry(e.target.value)}
+              >
+                {COUNTRIES.map((c) => (
+                  <option key={c.code} value={c.code}>
+                    {c.flag} {c.label}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            <div className="min-w-44 flex-1">
+              <label className="mb-1 block text-xs font-medium text-neutral-500">
+                Competitors to compare: {n}
+              </label>
+              <input
+                type="range"
+                min={1}
+                max={25}
+                value={n}
+                onChange={(e) => setN(Number(e.target.value))}
+                className="w-full accent-indigo-600"
+              />
+            </div>
+            <Button
+              onClick={() => compare.refetch()}
+              disabled={compare.isFetching || !effKeyword}
+            >
+              {compare.isFetching && <Loader2 className="size-4 animate-spin" />}
+              {compare.isFetching ? `Comparing… (~${n + 1}s)` : "Compare"}
+            </Button>
+          </div>
+
+          {compare.data && !compare.isFetching && (
+            <div className="mt-5">
+              <ResponsiveContainer width="100%" height={Math.max(200, chart.length * 42)}>
+                <BarChart data={chart} layout="vertical" margin={{ left: 12, right: 40 }}>
+                  <XAxis type="number" tickLine={false} />
+                  <YAxis
+                    type="category"
+                    dataKey="name"
+                    width={220}
+                    tickLine={false}
+                    axisLine={false}
+                    tick={{ fontSize: 12 }}
+                  />
+                  <Tooltip />
+                  <Bar dataKey="rank" radius={[0, 6, 6, 0]}>
+                    <LabelList dataKey="rank" position="right" formatter={(v) => `#${v}`} className="text-xs" />
+                    {chart.map((d, i) => (
+                      <Cell key={i} fill={d.fill} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+              {compare.data.competitors.some((c) => c.rank == null) && (
+                <p className="mt-2 text-xs text-neutral-400">
+                  Unranked for “{compare.data.keyword}”:{" "}
+                  {compare.data.competitors
+                    .filter((c) => c.rank == null)
+                    .map((c) => c.name)
+                    .join(", ")}
+                </p>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
 
 function Methodology() {
   const [open, setOpen] = useState(false);
@@ -69,7 +212,15 @@ function Methodology() {
   );
 }
 
-function CompetitorTable({ apps }: { apps: Competitor[] }) {
+function CompetitorTable({
+  apps,
+  onRemove,
+  removingId,
+}: {
+  apps: Competitor[];
+  onRemove: (id: number) => void;
+  removingId: number | null;
+}) {
   if (!apps.length) return <EmptyState>No competitors in this tier.</EmptyState>;
   return (
     <table className="w-full text-sm">
@@ -79,12 +230,13 @@ function CompetitorTable({ apps }: { apps: Competitor[] }) {
           <th className="py-2 pr-3">Score</th>
           <th className="py-2 pr-3">Rating</th>
           <th className="py-2 pr-3">Ratings count</th>
-          <th className="py-2">Category</th>
+          <th className="py-2 pr-3">Category</th>
+          <th className="py-2"></th>
         </tr>
       </thead>
       <tbody className="divide-y divide-neutral-100">
         {apps.map((c) => (
-          <tr key={c.app_id}>
+          <tr key={c.app_id} className="group">
             <td className="max-w-xs truncate py-2.5 pr-3 font-medium text-neutral-800">
               {c.name}
             </td>
@@ -97,7 +249,21 @@ function CompetitorTable({ apps }: { apps: Competitor[] }) {
             <td className="py-2.5 pr-3 text-neutral-600">
               {c.rating_count?.toLocaleString() ?? "—"}
             </td>
-            <td className="py-2.5 text-neutral-500">{c.category ?? "—"}</td>
+            <td className="py-2.5 pr-3 text-neutral-500">{c.category ?? "—"}</td>
+            <td className="py-2.5 text-right">
+              <button
+                onClick={() => onRemove(c.app_id)}
+                disabled={removingId === c.app_id}
+                title="Remove this competitor (deletes it from the database)"
+                className="rounded p-1.5 text-neutral-300 opacity-0 transition hover:bg-red-50 hover:text-red-500 group-hover:opacity-100"
+              >
+                {removingId === c.app_id ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Trash2 className="size-4" />
+                )}
+              </button>
+            </td>
           </tr>
         ))}
       </tbody>
@@ -107,9 +273,17 @@ function CompetitorTable({ apps }: { apps: Competitor[] }) {
 
 export default function CompetitorsPage() {
   const { appId, country } = usePageContext();
+  const queryClient = useQueryClient();
   const { data, isLoading } = useCompetitors(appId, country);
   const { data: app } = useApp(appId, country);
   const [tab, setTab] = useState<"tier1" | "tier2">("tier1");
+
+  const removeCompetitor = useMutation({
+    mutationFn: (compId: number) =>
+      apiDelete(`/app/${appId}/competitors/${compId}`, { country }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["competitors", appId, country] }),
+  });
 
   const tier1 = useMemo(() => data?.tier1 ?? [], [data?.tier1]);
   const tier2 = useMemo(() => data?.tier2 ?? [], [data?.tier2]);
@@ -152,6 +326,9 @@ export default function CompetitorsPage() {
   return (
     <div className="mx-auto max-w-6xl">
       <PageTitle title="🏆 Competitor Analysis" subtitle={countryLabel(country)} />
+
+      <CompareCard appId={appId} country={country} />
+
       <Methodology />
 
       {!all.length ? (
@@ -214,7 +391,11 @@ export default function CompetitorsPage() {
                 </button>
               ))}
             </div>
-            <CompetitorTable apps={tab === "tier1" ? tier1 : tier2} />
+            <CompetitorTable
+              apps={tab === "tier1" ? tier1 : tier2}
+              onRemove={(id) => removeCompetitor.mutate(id)}
+              removingId={removeCompetitor.isPending ? removeCompetitor.variables : null}
+            />
           </Card>
 
           {scatterData.length > 0 && (

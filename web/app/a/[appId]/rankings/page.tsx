@@ -1,24 +1,14 @@
 "use client";
 
-/** Rankings — keyword rank tracking, velocity, and competitor comparison. */
+/** Rankings — keyword rank tracking and velocity. */
 
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import {
-  Bar,
-  BarChart,
-  Cell,
-  LabelList,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 import { Loader2, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { apiDelete, apiPost } from "@/lib/api";
 import { usePageContext } from "@/lib/context";
-import { useCompare, useRankings } from "@/lib/hooks";
-import { COUNTRIES, countryLabel } from "@/lib/countries";
+import { useRankings } from "@/lib/hooks";
+import { countryLabel } from "@/lib/countries";
 import {
   Button,
   Card,
@@ -28,7 +18,6 @@ import {
   MetricCard,
   PageTitle,
   SectionTitle,
-  Select,
   Spinner,
   TrendBadge,
 } from "@/components/ui";
@@ -64,15 +53,6 @@ export default function RankingsPage() {
     onSuccess: invalidate,
   });
 
-  /* ── Competitor comparison state ─────────────────────────────────── */
-  const kwOptions = rankings.map((r) => r.keyword);
-  const [cmpKeyword, setCmpKeyword] = useState<string | null>(null);
-  const [cmpCountry, setCmpCountry] = useState<string | undefined>(undefined);
-  const [cmpN, setCmpN] = useState(5);
-  const effectiveKeyword = cmpKeyword ?? kwOptions[0] ?? null;
-  const effectiveCountry = cmpCountry ?? country ?? "in";
-  const compare = useCompare(appId, effectiveKeyword, cmpN, effectiveCountry);
-
   const sorted = useMemo(
     () =>
       [...rankings].sort((a, b) => (a.rank ?? 9999) - (b.rank ?? 9999)),
@@ -89,21 +69,6 @@ export default function RankingsPage() {
       </div>
     );
   }
-
-  const compareData = compare.data
-    ? [
-        {
-          name: `${compare.data.target.name} (you)`,
-          rank: compare.data.target.rank,
-          fill: "#4f46e5",
-        },
-        ...compare.data.competitors.map((c) => ({
-          name: c.name,
-          rank: c.rank,
-          fill: "#a5b4fc",
-        })),
-      ].filter((d) => d.rank != null)
-    : [];
 
   return (
     <div className="mx-auto max-w-6xl">
@@ -222,111 +187,6 @@ export default function RankingsPage() {
                 ))}
               </tbody>
             </table>
-          </Card>
-
-          {/* ── Competitor rank comparison ──────────────────────────── */}
-          <Card className="mt-6">
-            <SectionTitle>🆚 Competitor rank comparison</SectionTitle>
-            <p className="mb-4 text-xs text-neutral-500">
-              Live lookup: where do your top competitors rank for a keyword, in any
-              country? Lower rank = better. ~1s per competitor.
-            </p>
-            <div className="flex flex-wrap items-end gap-3">
-              <div>
-                <label className="mb-1 block text-xs font-medium text-neutral-500">
-                  Keyword
-                </label>
-                <Select
-                  className="w-52"
-                  value={effectiveKeyword ?? ""}
-                  onChange={(e) => setCmpKeyword(e.target.value)}
-                >
-                  {kwOptions.map((k) => (
-                    <option key={k} value={k}>
-                      {k}
-                    </option>
-                  ))}
-                </Select>
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-medium text-neutral-500">
-                  Country
-                </label>
-                <Select
-                  className="w-44"
-                  value={effectiveCountry}
-                  onChange={(e) => setCmpCountry(e.target.value)}
-                >
-                  {COUNTRIES.map((c) => (
-                    <option key={c.code} value={c.code}>
-                      {c.flag} {c.label}
-                    </option>
-                  ))}
-                </Select>
-              </div>
-              <div className="min-w-44 flex-1">
-                <label className="mb-1 block text-xs font-medium text-neutral-500">
-                  Competitors to compare: {cmpN}
-                </label>
-                <input
-                  type="range"
-                  min={1}
-                  max={25}
-                  value={cmpN}
-                  onChange={(e) => setCmpN(Number(e.target.value))}
-                  className="w-full accent-indigo-600"
-                />
-              </div>
-              <Button
-                onClick={() => compare.refetch()}
-                disabled={compare.isFetching || !effectiveKeyword}
-              >
-                {compare.isFetching && <Loader2 className="size-4 animate-spin" />}
-                {compare.isFetching ? `Comparing… (~${cmpN + 1}s)` : "Compare"}
-              </Button>
-            </div>
-
-            {compare.data && !compare.isFetching && (
-              <div className="mt-5">
-                <ResponsiveContainer
-                  width="100%"
-                  height={Math.max(200, compareData.length * 42)}
-                >
-                  <BarChart data={compareData} layout="vertical" margin={{ left: 12, right: 40 }}>
-                    <XAxis type="number" tickLine={false} />
-                    <YAxis
-                      type="category"
-                      dataKey="name"
-                      width={220}
-                      tickLine={false}
-                      axisLine={false}
-                      tick={{ fontSize: 12 }}
-                    />
-                    <Tooltip />
-                    <Bar dataKey="rank" radius={[0, 6, 6, 0]}>
-                      <LabelList
-                        dataKey="rank"
-                        position="right"
-                        formatter={(v) => `#${v}`}
-                        className="text-xs"
-                      />
-                      {compareData.map((d, i) => (
-                        <Cell key={i} fill={d.fill} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-                {compare.data.competitors.some((c) => c.rank == null) && (
-                  <p className="mt-2 text-xs text-neutral-400">
-                    Unranked for “{compare.data.keyword}”:{" "}
-                    {compare.data.competitors
-                      .filter((c) => c.rank == null)
-                      .map((c) => c.name)
-                      .join(", ")}
-                  </p>
-                )}
-              </div>
-            )}
           </Card>
         </>
       )}
