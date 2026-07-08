@@ -202,6 +202,26 @@ def list_apps() -> dict:
     return {"total": len(apps), "apps": apps}
 
 
+@app.get("/search")
+def search_apps(term: str, country: str = config.DEFAULT_COUNTRY, limit: int = 8) -> dict:
+    """
+    App Store search suggestions for the collect-form autocomplete.
+
+    Args:
+        term:    Partial or full app name (query param).
+        country: App Store country code (query param).
+        limit:   Max suggestions (query param).
+
+    Returns:
+        Dict with a list of {app_id, name, category, seller, artwork} suggestions.
+    """
+    term = term.strip()
+    if len(term) < 2:
+        return {"results": []}
+    results = scraper.search_apps(term, country, max(1, min(limit, 15)))
+    return {"results": results}
+
+
 @app.get("/app/{app_id}")
 def get_app(app_id: int, country: Optional[str] = None) -> dict:
     """
@@ -244,6 +264,23 @@ def get_app_countries(app_id: int) -> dict:
     if not database.get_app(app_id):
         raise HTTPException(status_code=404, detail=f"App {app_id} not found")
     return {"app_id": app_id, "countries": database.get_app_countries(app_id)}
+
+
+@app.post("/app/{app_id}/untrack", dependencies=[Depends(verify_api_key)])
+def untrack_app(app_id: int) -> dict:
+    """
+    Remove an app from the tracked list without deleting its collected data.
+
+    Args:
+        app_id: iTunes numeric app ID.
+
+    Returns:
+        Dict confirming the app is untracked.
+    """
+    if not database.get_app(app_id):
+        raise HTTPException(status_code=404, detail=f"App {app_id} not found")
+    database.untrack_app(app_id)
+    return {"app_id": app_id, "untracked": True}
 
 
 @app.get("/app/{app_id}/reviews")
@@ -360,6 +397,28 @@ def refresh_rankings(app_id: int, country: Optional[str] = None) -> dict:
     summary = rank_tracker.refresh_rankings(
         app_id, country=_resolve_country(app_data, country)
     )
+    return {"app_id": app_id, "total": len(summary), "rankings": summary}
+
+
+@app.delete("/app/{app_id}/rankings/keyword", dependencies=[Depends(verify_api_key)])
+def remove_keyword(app_id: int, keyword: str, country: Optional[str] = None) -> dict:
+    """
+    Stop tracking a keyword — delete its ranking rows for the app+country.
+
+    Args:
+        app_id:  iTunes numeric app ID.
+        keyword: Keyword to remove (query param).
+        country: App Store country (query param); defaults to the app's country.
+
+    Returns:
+        The ranking summary after removal.
+    """
+    app_data = database.get_app(app_id)
+    if not app_data:
+        raise HTTPException(status_code=404, detail=f"App {app_id} not found")
+    resolved = _resolve_country(app_data, country)
+    database.delete_ranking_keyword(app_id, keyword.strip(), resolved)
+    summary = rank_tracker.get_ranking_summary(app_id, resolved)
     return {"app_id": app_id, "total": len(summary), "rankings": summary}
 
 

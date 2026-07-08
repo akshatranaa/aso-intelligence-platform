@@ -20,7 +20,9 @@ logger = logging.getLogger(__name__)
 _RETRYABLE_STATUS = {429, 500, 502, 503, 529}
 
 
-def _call_llm(prompt: str, expect_json: bool = False) -> dict | list | str | None:
+def _call_llm(
+    prompt: str, expect_json: bool = False, model: str | None = None
+) -> dict | list | str | None:
     """
     Central function that makes every LLM API call, via Groq.
 
@@ -32,6 +34,7 @@ def _call_llm(prompt: str, expect_json: bool = False) -> dict | list | str | Non
     Args:
         prompt:      Full prompt string to send.
         expect_json: If True, parse the response text as JSON before returning.
+        model:       Groq model override (defaults to config.LLM_MODEL).
 
     Returns:
         Parsed JSON dict/list if expect_json=True, raw string otherwise,
@@ -42,6 +45,7 @@ def _call_llm(prompt: str, expect_json: bool = False) -> dict | list | str | Non
         logger.error("GROQ_API_KEY not set — skipping LLM call")
         return None
 
+    model = model or config.LLM_MODEL
     url = config.GROQ_BASE_URL
     text = None
     for attempt in range(config.LLM_MAX_RETRIES + 1):
@@ -175,43 +179,39 @@ def judge_competitors(
     def _short(app):
         return (app.get("description") or "")[:120].replace("\n", " ")
 
+    # Name + category only — truncated descriptions add noise and make the judge
+    # erratic (it dropped obvious VPNs). The app name is the cleanest signal.
     listing = "\n".join(
-        f'{c["app_id"]}: {c.get("name","")} [{c.get("category","")}] — {_short(c)}'
+        f'{c["app_id"]}: {c.get("name","")} [{c.get("category","")}]'
         for c in candidates
     )
     prompt = f"""
-You are a strict App Store competitive-analysis expert. Your job is to identify ONLY
-genuine direct competitors — apps a user would actually compare against the target
-before choosing one.
+You are a strict App Store competitive-analysis expert. Identify ONLY genuine
+direct competitors — apps that serve the SAME primary purpose as the target, that
+a user would realistically use INSTEAD of it for the same core need.
 
-TARGET APP: {target_app.get("name","")} — {_short(target_app)}
+TARGET APP: {target_app.get("name","")} [{target_app.get("category","")}] — {_short(target_app)}
 
-DIRECT COMPETITOR TEST — a candidate must pass ALL of these:
-1. Same primary use case: the #1 reason someone opens the candidate is essentially
-   the same as the #1 reason someone opens the target.
-2. Substitutable: a user deciding "which app should I use for this" would realistically
-   put the target and this candidate on the same shortlist.
-3. Same core function, not just the same category, audience, or a shared feature.
+INCLUDE a candidate when its PRIMARY function is essentially the same as the
+target's core function. Judge by what the app actually DOES, not its store
+category — apps are often mis-categorised (e.g. VPNs are commonly listed under
+"Productivity"). If the target is a VPN, every genuine VPN/proxy app is a
+competitor; if it's a music player, every music-streaming app is; and so on.
 
-EXCLUDE a candidate if any of these apply:
-- It shares only a category or a single feature with the target but its primary
-  purpose is different (e.g. a photo-editing app is NOT a competitor to a cloud
-  photo-storage app, even though both are "photo" apps).
-- It's complementary rather than a substitute (integrates with / extends the target
-  rather than replacing it).
-- It's meaningfully broader or narrower in scope than the target's core function.
-- It's only popular, trending, or loosely thematically related — popularity is never
-  a reason to include.
-- You're unsure. Default to EXCLUDE — a missed competitor is fine, a wrong one isn't.
+EXCLUDE a candidate when its main purpose is clearly something else — even if it is
+popular, shares a keyword, sits in the same store category, or bundles a minor
+related feature. Common things to exclude for most targets: general-purpose AI
+assistants / chatbots (e.g. ChatGPT, Perplexity), note-taking / to-do / calendar /
+habit / focus / screen-time apps, web browsers, and other tools whose core job
+differs from the target's. Popularity is never a reason to include.
 
-Candidates (format "app_id: name — description"):
+Candidates (format "app_id: name [category]"):
 {listing}
 
-Return ONLY a JSON array of app_id integers for candidates that pass ALL criteria
-above — no explanation, no markdown, no text outside the array. If none qualify,
-return [].
+Return ONLY a JSON array of the app_id integers that qualify — no explanation, no
+markdown, no text outside the array. If none qualify, return [].
 """
-    result = _call_llm(prompt, expect_json=True)
+    result = _call_llm(prompt, expect_json=True, model=config.JUDGE_LLM_MODEL)
     if not isinstance(result, list):
         logger.warning("Competitor judge LLM call failed — signalling error")
         return None

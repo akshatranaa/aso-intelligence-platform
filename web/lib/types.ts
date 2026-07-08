@@ -7,6 +7,14 @@ export interface AppSummary {
   countries: string[];
 }
 
+export interface AppSearchResult {
+  app_id: number;
+  name: string;
+  category: string | null;
+  seller: string | null;
+  artwork: string | null;
+}
+
 export interface AppDetail {
   app_id: number;
   name: string;

@@ -72,6 +72,9 @@ LOG_FORMAT = "%(asctime)s — %(name)s — %(levelname)s — %(message)s"
 # Bump to "llama-3.3-70b-versatile" for better quality at a lower daily cap.
 GROQ_BASE_URL         = "https://api.groq.com/openai/v1/chat/completions"
 LLM_MODEL             = "llama-3.1-8b-instant"
+# The competitor judge is accuracy-critical (one call/collect) — use a stronger
+# model so it reliably excludes junk without dropping real competitors.
+JUDGE_LLM_MODEL       = "llama-3.3-70b-versatile"
 LLM_MAX_TOKENS        = 1024  # per-call output cap (conserves free quota)
 LLM_MAX_RETRIES       = 2     # retries on transient errors (429/503/timeout)
 LLM_REVIEW_BATCH_SIZE = 20

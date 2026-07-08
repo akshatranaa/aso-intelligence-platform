@@ -9,7 +9,7 @@ export class ApiError extends Error {
 }
 
 async function request<T>(
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "DELETE",
   path: string,
   params?: Record<string, string | number | boolean | undefined>
 ): Promise<T> {
@@ -36,3 +36,8 @@ export const apiPost = <T>(
   path: string,
   params?: Record<string, string | number | boolean | undefined>
 ) => request<T>("POST", path, params);
+
+export const apiDelete = <T>(
+  path: string,
+  params?: Record<string, string | number | boolean | undefined>
+) => request<T>("DELETE", path, params);

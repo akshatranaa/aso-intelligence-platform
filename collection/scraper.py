@@ -49,6 +49,53 @@ def _parse_app_fields(result: dict, country: str) -> dict:
     }
 
 
+def search_apps(
+    term: str, country: str = config.DEFAULT_COUNTRY, limit: int = 8
+) -> list[dict]:
+    """
+    Search iTunes for apps by name, returning lightweight suggestions.
+
+    Used for the collect-form autocomplete — returns just enough to show a
+    picker (name, id, category, icon), not the full metadata.
+
+    Args:
+        term:    Partial or full app name.
+        country: Two-letter App Store country code.
+        limit:   Maximum suggestions to return.
+
+    Returns:
+        List of {app_id, name, category, seller, artwork} dicts (may be empty).
+    """
+    url = config.ITUNES_SEARCH_URL
+    params = {"term": term, "entity": "software", "country": country, "limit": limit}
+    try:
+        response = client.get(url, params=params)
+        response.raise_for_status()
+        results = response.json().get("results", [])
+        return [
+            {
+                "app_id":   r.get("trackId"),
+                "name":     r.get("trackName"),
+                "category": r.get("primaryGenreName"),
+                "seller":   r.get("sellerName"),
+                "artwork":  r.get("artworkUrl60") or r.get("artworkUrl100"),
+            }
+            for r in results
+            if r.get("trackId")
+        ]
+    except httpx.TimeoutException:
+        logger.error(f"Timeout fetching: {url}")
+        return []
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTP {e.response.status_code} for: {url}")
+        return []
+    except Exception as e:
+        logger.error(f"Unexpected error fetching {url}: {e}")
+        return []
+    finally:
+        _rate_limit()
+
+
 def fetch_app_metadata(app_name: str, country: str = config.DEFAULT_COUNTRY) -> dict | None:
     """
     Search iTunes for an app by name and return its metadata.

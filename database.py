@@ -842,6 +842,48 @@ def get_competitors(target_app_id: int, country: str | None = None) -> list[dict
     return result
 
 
+def untrack_app(app_id: int) -> None:
+    """
+    Remove an app from the tracked-apps list without deleting its data.
+
+    Sets is_target_app = 0 so it drops out of GET /apps, while its reviews,
+    rankings, competitors, and per-country stats remain in the database (a later
+    collect re-promotes it).
+
+    Args:
+        app_id: iTunes numeric app ID.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE apps SET is_target_app = 0 WHERE app_id = %s", (app_id,)
+        )
+    logger.info(f"Untracked app {app_id} (data retained)")
+
+
+def delete_ranking_keyword(app_id: int, keyword: str, country: str) -> int:
+    """
+    Stop tracking a keyword — delete its ranking rows for an app+country.
+
+    Args:
+        app_id:  iTunes numeric app ID.
+        keyword: Keyword to remove.
+        country: App Store country code.
+
+    Returns:
+        Number of ranking rows deleted.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM rankings WHERE app_id = %s AND keyword = %s AND country = %s",
+            (app_id, keyword, country),
+        )
+        deleted = cursor.rowcount
+    logger.info(f"Deleted {deleted} ranking rows for '{keyword}' (app {app_id} [{country}])")
+    return deleted
+
+
 def get_competitors_last_discovered(target_app_id: int, country: str) -> str | None:
     """
     Return when competitors were most recently discovered for a target+country.

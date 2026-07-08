@@ -33,6 +33,14 @@ const SENTIMENT_COLORS = {
   Neutral: "#f59e0b",
 };
 
+function fmtDate(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return isNaN(d.getTime())
+    ? "—"
+    : d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
 function Methodology() {
   const [open, setOpen] = useState(false);
   return (
@@ -76,10 +84,13 @@ export default function SentimentPage() {
   const { data: reviewsData } = useReviews(appId, country);
   const [filter, setFilter] = useState("all");
 
-  const reviews = useMemo(
-    () => reviewsData?.reviews ?? [],
-    [reviewsData?.reviews]
-  );
+  // Newest reviews first (iTunes review_date is an ISO string, sorts lexically).
+  const reviews = useMemo(() => {
+    const list = reviewsData?.reviews ?? [];
+    return [...list].sort((a, b) =>
+      (b.review_date ?? "").localeCompare(a.review_date ?? "")
+    );
+  }, [reviewsData?.reviews]);
 
   const ratingDist = useMemo(() => {
     const counts = [5, 4, 3, 2, 1].map((stars) => ({
@@ -228,6 +239,7 @@ export default function SentimentPage() {
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-white text-left text-xs uppercase tracking-wide text-neutral-400">
                 <tr>
+                  <th className="py-2 pr-3">Date</th>
                   <th className="py-2 pr-3">Rating</th>
                   <th className="py-2 pr-3">Sentiment</th>
                   <th className="py-2 pr-3">Review</th>
@@ -237,6 +249,9 @@ export default function SentimentPage() {
               <tbody className="divide-y divide-neutral-100">
                 {filtered.slice(0, 100).map((r) => (
                   <tr key={r.review_id} className="align-top">
+                    <td className="whitespace-nowrap py-2.5 pr-3 text-neutral-500">
+                      {fmtDate(r.review_date)}
+                    </td>
                     <td className="whitespace-nowrap py-2.5 pr-3 font-medium text-amber-500">
                       {"★".repeat(r.rating ?? 0)}
                     </td>

@@ -14,8 +14,8 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { Loader2, Plus, RefreshCw } from "lucide-react";
-import { apiPost } from "@/lib/api";
+import { Loader2, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { apiDelete, apiPost } from "@/lib/api";
 import { usePageContext } from "@/lib/context";
 import { useCompare, useRankings } from "@/lib/hooks";
 import { COUNTRIES, countryLabel } from "@/lib/countries";
@@ -55,6 +55,12 @@ export default function RankingsPage() {
 
   const refresh = useMutation({
     mutationFn: () => apiPost(`/app/${appId}/rankings/refresh`, { country }),
+    onSuccess: invalidate,
+  });
+
+  const remove = useMutation({
+    mutationFn: (keyword: string) =>
+      apiDelete(`/app/${appId}/rankings/keyword`, { keyword, country }),
     onSuccess: invalidate,
   });
 
@@ -176,12 +182,13 @@ export default function RankingsPage() {
                   <th className="py-2 pr-3">Rank</th>
                   <th className="py-2 pr-3">Delta</th>
                   <th className="py-2 pr-3">Velocity (avg/day)</th>
-                  <th className="py-2">Trend</th>
+                  <th className="py-2 pr-3">Trend</th>
+                  <th className="py-2"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100">
                 {sorted.map((r) => (
-                  <tr key={r.keyword}>
+                  <tr key={r.keyword} className="group">
                     <td className="py-2.5 pr-3 font-medium text-neutral-800">
                       {r.keyword}
                     </td>
@@ -198,8 +205,18 @@ export default function RankingsPage() {
                     <td className="py-2.5 pr-3 text-neutral-600">
                       {r.velocity != null ? r.velocity.toFixed(2) : "—"}
                     </td>
-                    <td className="py-2.5">
+                    <td className="py-2.5 pr-3">
                       <TrendBadge trend={r.trend} />
+                    </td>
+                    <td className="py-2.5 text-right">
+                      <button
+                        onClick={() => remove.mutate(r.keyword)}
+                        disabled={remove.isPending}
+                        title="Stop tracking this keyword"
+                        className="rounded p-1.5 text-neutral-300 opacity-0 transition hover:bg-red-50 hover:text-red-500 group-hover:opacity-100"
+                      >
+                        <Trash2 className="size-4" />
+                      </button>
                     </td>
                   </tr>
                 ))}

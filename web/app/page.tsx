@@ -2,14 +2,14 @@
 
 /** Home — collect a new app or open an already-collected one. */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, Loader2, Search } from "lucide-react";
-import { apiPost } from "@/lib/api";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { ChevronRight, Loader2, Search, X } from "lucide-react";
+import { apiGet, apiPost } from "@/lib/api";
 import { useApps, useCollectJob } from "@/lib/hooks";
 import { COUNTRIES, countryLabel } from "@/lib/countries";
-import type { CollectStart } from "@/lib/types";
+import type { AppSearchResult, CollectStart } from "@/lib/types";
 import {
   Badge,
   Button,
@@ -28,19 +28,56 @@ export default function HomePage() {
   const queryClient = useQueryClient();
   const { data: appsData, isLoading: appsLoading } = useApps();
 
-  const [name, setName] = useState("");
   const [country, setCountry] = useState("in");
+  const [name, setName] = useState("");
   const [useLlm, setUseLlm] = useState(true);
   const [force, setForce] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
 
+  // ── App-name autocomplete ──────────────────────────────────────────────
+  const [suggestions, setSuggestions] = useState<AppSearchResult[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const skipSearch = useRef(false); // don't re-search right after picking
+
+  useEffect(() => {
+    if (skipSearch.current) {
+      skipSearch.current = false;
+      return;
+    }
+    const term = name.trim();
+    if (term.length < 2) {
+      setSuggestions([]);
+      return;
+    }
+    const t = setTimeout(async () => {
+      try {
+        const r = await apiGet<{ results: AppSearchResult[] }>("/search", {
+          term,
+          country,
+        });
+        setSuggestions(r.results);
+        setShowSuggestions(true);
+      } catch {
+        /* ignore search errors */
+      }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [name, country]);
+
+  function pickSuggestion(s: AppSearchResult) {
+    skipSearch.current = true;
+    setName(s.name);
+    setShowSuggestions(false);
+  }
+
   const { data: job } = useCollectJob(jobId);
   const running = jobId != null && (!job || job.status === "running");
 
   async function startCollect() {
     if (!name.trim()) return;
+    setShowSuggestions(false);
     setStartError(null);
     setElapsed(0);
     try {
@@ -49,7 +86,6 @@ export default function HomePage() {
         { use_llm: useLlm, country, force }
       );
       setJobId(start.job_id);
-      // Lightweight elapsed counter for the progress card.
       const t = setInterval(() => setElapsed((e) => e + 1), 1000);
       const stop = setInterval(() => {
         const j = queryClient.getQueryData<{ status: string }>([
@@ -66,6 +102,11 @@ export default function HomePage() {
       setStartError(e instanceof Error ? e.message : "Failed to start collection");
     }
   }
+
+  const untrack = useMutation({
+    mutationFn: (appId: number) => apiPost(`/app/${appId}/untrack`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["apps"] }),
+  });
 
   const done = job?.status === "done" ? job.result : null;
   const failed = job?.status === "error" ? (job.detail ?? "Unknown error") : null;
@@ -84,18 +125,6 @@ export default function HomePage() {
           <div className="space-y-4">
             <div>
               <label className="mb-1 block text-xs font-medium text-neutral-500">
-                App name
-              </label>
-              <Input
-                placeholder="e.g. Spotify"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && !running && startCollect()}
-                disabled={running}
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-neutral-500">
                 App Store country
               </label>
               <Select
@@ -110,6 +139,59 @@ export default function HomePage() {
                 ))}
               </Select>
             </div>
+
+            <div className="relative">
+              <label className="mb-1 block text-xs font-medium text-neutral-500">
+                App name
+              </label>
+              <Input
+                placeholder="Start typing — e.g. Spotify"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                onFocus={() => suggestions.length && setShowSuggestions(true)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !running) {
+                    setShowSuggestions(false);
+                    startCollect();
+                  }
+                  if (e.key === "Escape") setShowSuggestions(false);
+                }}
+                disabled={running}
+                autoComplete="off"
+              />
+              {showSuggestions && suggestions.length > 0 && (
+                <ul className="absolute z-20 mt-1 max-h-72 w-full overflow-y-auto rounded-lg border border-neutral-200 bg-white shadow-lg">
+                  {suggestions.map((s) => (
+                    <li key={s.app_id}>
+                      <button
+                        type="button"
+                        onClick={() => pickSuggestion(s)}
+                        className="flex w-full items-center gap-3 px-3 py-2 text-left hover:bg-neutral-50"
+                      >
+                        {s.artwork && (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={s.artwork}
+                            alt=""
+                            className="size-8 shrink-0 rounded-lg"
+                          />
+                        )}
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-medium text-neutral-800">
+                            {s.name}
+                          </span>
+                          <span className="block truncate text-xs text-neutral-400">
+                            {s.category ?? ""}
+                            {s.seller ? ` · ${s.seller}` : ""}
+                          </span>
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
             <CheckboxRow
               label="Use AI during analysis"
               help="Smarter seeds, competitor judging, and review analysis (uses API credits)."
@@ -188,7 +270,7 @@ export default function HomePage() {
           ) : (
             <ul className="divide-y divide-neutral-100">
               {appsData.apps.map((a) => (
-                <li key={a.app_id}>
+                <li key={a.app_id} className="group flex items-center gap-1">
                   <button
                     onClick={() =>
                       router.push(
@@ -197,7 +279,7 @@ export default function HomePage() {
                         }`
                       )
                     }
-                    className="flex w-full items-center justify-between gap-2 rounded-lg px-2 py-2.5 text-left hover:bg-neutral-50"
+                    className="flex min-w-0 flex-1 items-center justify-between gap-2 rounded-lg px-2 py-2.5 text-left hover:bg-neutral-50"
                   >
                     <span className="min-w-0">
                       <span className="block truncate text-sm font-medium text-neutral-900">
@@ -213,8 +295,15 @@ export default function HomePage() {
                           {c.toUpperCase()}
                         </Badge>
                       ))}
-                      <ChevronRight className="size-4 text-neutral-300" />
                     </span>
+                  </button>
+                  <button
+                    onClick={() => untrack.mutate(a.app_id)}
+                    disabled={untrack.isPending}
+                    title="Remove from list (keeps collected data)"
+                    className="shrink-0 rounded-lg p-2 text-neutral-300 hover:bg-red-50 hover:text-red-500"
+                  >
+                    <X className="size-4" />
                   </button>
                 </li>
               ))}
