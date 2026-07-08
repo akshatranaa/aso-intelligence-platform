@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 import config
@@ -121,6 +121,8 @@ def _run_collection(
             seed_keywords, used_llm_seeds = seeds.derive_seed_keywords(
                 app_data, use_llm=use_llm
             )
+            # Persist the seeds used, so they're editable on the Competitors page.
+            database.set_seed_keywords(app_id, country, seed_keywords)
 
         competitor.discover_competitors(
             app_id, seed_keywords, use_llm=use_llm, country=country, force=force
@@ -166,6 +168,46 @@ def _run_collection(
         }
     except Exception as e:
         logger.error(f"Collection job {job_id} failed: {e}")
+        _jobs[job_id] = {"status": "error", "detail": str(e)}
+
+
+def _run_rediscovery(
+    job_id: str, app_id: int, keywords: list[str], use_llm: bool, country: str
+) -> None:
+    """
+    Re-run competitor discovery for an edited seed-keyword set (background task).
+
+    Saves the new seed list, clears the app+country's existing competitors, then
+    re-discovers from all provided seeds (uncapped) and re-judges — so deleted
+    keywords' unique competitors drop out and added keywords' competitors appear.
+
+    Args:
+        job_id:   _jobs key.
+        app_id:   Target app.
+        keywords: The edited seed keyword list.
+        use_llm:  Whether to use the LLM relevance judge.
+        country:  App Store country.
+    """
+    try:
+        database.create_tables()
+        app_data = database.get_app(app_id)
+        if not app_data:
+            _jobs[job_id] = {"status": "error", "detail": f"App {app_id} not found"}
+            return
+        database.set_seed_keywords(app_id, country, keywords)
+        database.delete_all_competitors(app_id, country)
+        competitor.discover_competitors(
+            app_id, keywords, use_llm=use_llm, country=country,
+            force=True, max_seeds=len(keywords),
+        )
+        comps = database.get_competitors(app_id, country)
+        logger.info(f"Rediscovery complete for {app_id} [{country}]: {len(comps)}")
+        _jobs[job_id] = {
+            "status": "done",
+            "result": {"app_id": app_id, "country": country, "total": len(comps)},
+        }
+    except Exception as e:
+        logger.error(f"Rediscovery job {job_id} failed: {e}")
         _jobs[job_id] = {"status": "error", "detail": str(e)}
 
 
@@ -508,6 +550,70 @@ def remove_competitor(
     resolved = _resolve_country(app_data, country)
     purged = database.delete_competitor(app_id, competitor_app_id, resolved)
     return {"app_id": app_id, "removed": competitor_app_id, "purged": purged}
+
+
+@app.get("/app/{app_id}/seeds")
+def get_seeds(app_id: int, country: Optional[str] = None) -> dict:
+    """
+    Fetch the competitor-discovery seed keywords for an app+country.
+
+    Args:
+        app_id:  iTunes numeric app ID.
+        country: App Store country (query param); defaults to the app's.
+
+    Returns:
+        Dict with the seed keyword list.
+    """
+    app_data = database.get_app(app_id)
+    if not app_data:
+        raise HTTPException(status_code=404, detail=f"App {app_id} not found")
+    resolved = _resolve_country(app_data, country)
+    return {
+        "app_id": app_id,
+        "country": resolved,
+        "seeds": database.get_seed_keywords(app_id, resolved),
+    }
+
+
+@app.post(
+    "/app/{app_id}/competitors/rediscover",
+    dependencies=[Depends(verify_api_key)],
+)
+def rediscover_competitors(
+    app_id: int,
+    background_tasks: BackgroundTasks,
+    kw: list[str] = Query(default=[]),
+    country: Optional[str] = None,
+    use_llm: bool = True,
+) -> dict:
+    """
+    Re-run competitor discovery for an edited seed-keyword set (background job).
+
+    Saves the given seeds, clears the app+country competitors, and re-discovers
+    from all of them. Returns a job_id — poll GET /collect/status/{job_id}.
+
+    Args:
+        app_id:  iTunes numeric app ID.
+        kw:      Seed keywords (repeated query param, e.g. ?kw=vpn&kw=proxy).
+        country: App Store country (query param); defaults to the app's.
+        use_llm: Whether to use the LLM relevance judge (query param).
+
+    Returns:
+        Dict with job_id and initial status.
+    """
+    app_data = database.get_app(app_id)
+    if not app_data:
+        raise HTTPException(status_code=404, detail=f"App {app_id} not found")
+    keywords = list(dict.fromkeys(k.strip() for k in kw if k.strip()))
+    if not keywords:
+        raise HTTPException(status_code=400, detail="At least one seed keyword is required")
+    resolved = _resolve_country(app_data, country)
+    job_id = str(uuid.uuid4())
+    _jobs[job_id] = {"status": "running"}
+    background_tasks.add_task(
+        _run_rediscovery, job_id, app_id, keywords, use_llm, resolved
+    )
+    return {"job_id": job_id, "status": "running"}
 
 
 @app.get("/app/{app_id}/recommendations")

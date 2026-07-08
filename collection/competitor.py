@@ -108,6 +108,7 @@ def _gather_candidates(
     target_app_id: int,
     target_keywords: list[str],
     country: str = config.DEFAULT_COUNTRY,
+    max_seeds: int = config.COMPETITOR_SEEDS_MAX,
 ) -> list[dict]:
     """
     Collect candidate apps from the seed-keyword searches (deduped, no target).
@@ -116,12 +117,14 @@ def _gather_candidates(
         target_app_id:   The app being analysed (excluded from results).
         target_keywords: Seed keywords defining the competitive space.
         country:         App Store country code to search within.
+        max_seeds:       How many seed keywords to search (default caps the
+                         auto-derived set; the seed editor passes all curated ones).
 
     Returns:
         List of candidate app metadata dicts.
     """
     candidate_ids: set[int] = set()
-    for keyword in target_keywords[: config.COMPETITOR_SEEDS_MAX]:
+    for keyword in target_keywords[:max_seeds]:
         for app_id in scraper.fetch_keyword_apps(
             keyword, country=country, limit=config.COMPETITOR_CANDIDATES_PER_SEED
         ):
@@ -143,6 +146,7 @@ def discover_competitors(
     use_llm: bool = True,
     country: str = config.DEFAULT_COUNTRY,
     force: bool = False,
+    max_seeds: int = config.COMPETITOR_SEEDS_MAX,
 ) -> list[dict]:
     """
     Discover competitor apps for a target and gate them by relevance.
@@ -188,7 +192,7 @@ def discover_competitors(
         return []
     target_category = target_data.get("category")
 
-    candidates = _gather_candidates(target_app_id, target_keywords, country)
+    candidates = _gather_candidates(target_app_id, target_keywords, country, max_seeds)
     if not candidates:
         return []
 

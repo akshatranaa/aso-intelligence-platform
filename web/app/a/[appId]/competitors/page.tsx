@@ -2,7 +2,7 @@
 
 /** Competitors — AI-judged competitor list with scores, tiers, and charts. */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Bar,
@@ -18,16 +18,24 @@ import {
   YAxis,
   ZAxis,
 } from "recharts";
-import { Loader2, Trash2 } from "lucide-react";
-import { apiDelete } from "@/lib/api";
+import { Loader2, Pencil, Plus, Trash2, X } from "lucide-react";
+import { apiDelete, apiPost } from "@/lib/api";
 import { usePageContext } from "@/lib/context";
-import { useApp, useCompare, useCompetitors, useRankings } from "@/lib/hooks";
+import {
+  useApp,
+  useCollectJob,
+  useCompare,
+  useCompetitors,
+  useRankings,
+  useSeeds,
+} from "@/lib/hooks";
 import { COUNTRIES, countryLabel } from "@/lib/countries";
 import type { Competitor } from "@/lib/types";
 import {
   Button,
   Card,
   EmptyState,
+  Input,
   MetricCard,
   PageTitle,
   SectionTitle,
@@ -35,6 +43,136 @@ import {
   Spinner,
   cn,
 } from "@/components/ui";
+
+function SeedKeywordsCard({ appId, country }: { appId: number; country?: string }) {
+  const queryClient = useQueryClient();
+  const { data } = useSeeds(appId, country);
+  const serverSeeds = useMemo(() => data?.seeds ?? [], [data?.seeds]);
+
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<string[]>([]);
+  const [newKw, setNewKw] = useState("");
+  const [jobId, setJobId] = useState<string | null>(null);
+  const { data: job } = useCollectJob(jobId);
+  const rediscovering = jobId != null && (!job || job.status === "running");
+  const failed = job?.status === "error" ? job.detail : null;
+
+  useEffect(() => {
+    if (job?.status === "done") {
+      queryClient.invalidateQueries({ queryKey: ["competitors", appId, country] });
+      queryClient.invalidateQueries({ queryKey: ["seeds", appId, country] });
+      setEditing(false);
+      setJobId(null);
+    }
+  }, [job?.status, appId, country, queryClient]);
+
+  const chips = editing ? draft : serverSeeds;
+
+  function addKw() {
+    const k = newKw.trim().toLowerCase();
+    if (k && !draft.includes(k)) setDraft([...draft, k]);
+    setNewKw("");
+  }
+
+  async function confirm() {
+    if (!draft.length) return;
+    const res = await apiPost<{ job_id: string }>(
+      `/app/${appId}/competitors/rediscover`,
+      { kw: draft, country }
+    );
+    if (res?.job_id) setJobId(res.job_id);
+  }
+
+  return (
+    <Card className="mb-6">
+      <div className="mb-3 flex items-center justify-between">
+        <SectionTitle>🌱 Seed keywords</SectionTitle>
+        {!editing && !rediscovering && (
+          <Button
+            variant="outline"
+            onClick={() => {
+              setDraft(serverSeeds);
+              setNewKw("");
+              setEditing(true);
+            }}
+          >
+            <Pencil className="size-4" /> Edit
+          </Button>
+        )}
+      </div>
+      <p className="mb-3 text-xs text-neutral-500">
+        The keywords used to discover this app&apos;s competitors. Editing them and
+        confirming re-runs the competitor analysis for {countryLabel(country)}.
+      </p>
+
+      {rediscovering ? (
+        <div className="flex items-center gap-2 rounded-lg border border-indigo-100 bg-indigo-50 p-4 text-sm text-indigo-800">
+          <Spinner /> Re-analysing competitors from your edited keywords… this can
+          take up to a minute.
+        </div>
+      ) : (
+        <>
+          <div className="flex flex-wrap gap-2">
+            {chips.length === 0 && (
+              <span className="text-sm text-neutral-400">
+                No seed keywords recorded — add some, or re-collect the app.
+              </span>
+            )}
+            {chips.map((k) => (
+              <span
+                key={k}
+                className="inline-flex items-center gap-1.5 rounded-full bg-neutral-100 px-3 py-1 text-sm text-neutral-700"
+              >
+                {k}
+                {editing && (
+                  <button
+                    onClick={() => setDraft(draft.filter((x) => x !== k))}
+                    className="text-neutral-400 hover:text-red-500"
+                    title="Remove keyword"
+                  >
+                    <X className="size-3.5" />
+                  </button>
+                )}
+              </span>
+            ))}
+          </div>
+
+          {editing && (
+            <>
+              <div className="mt-3 flex gap-2">
+                <Input
+                  placeholder="Add a keyword — e.g. secure vpn"
+                  value={newKw}
+                  onChange={(e) => setNewKw(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && addKw()}
+                />
+                <Button variant="outline" onClick={addKw} disabled={!newKw.trim()}>
+                  <Plus className="size-4" /> Add
+                </Button>
+              </div>
+              <div className="mt-4 flex items-center gap-2">
+                <Button onClick={confirm} disabled={draft.length === 0}>
+                  Confirm &amp; re-analyse ({draft.length})
+                </Button>
+                <Button variant="ghost" onClick={() => setEditing(false)}>
+                  Cancel
+                </Button>
+                {draft.length === 0 && (
+                  <span className="text-xs text-red-500">Keep at least one keyword.</span>
+                )}
+              </div>
+            </>
+          )}
+          {failed && (
+            <p className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">
+              Re-analysis failed: {failed}
+            </p>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
 
 function CompareCard({
   appId,
@@ -326,6 +464,8 @@ export default function CompetitorsPage() {
   return (
     <div className="mx-auto max-w-6xl">
       <PageTitle title="🏆 Competitor Analysis" subtitle={countryLabel(country)} />
+
+      <SeedKeywordsCard appId={appId} country={country} />
 
       <CompareCard appId={appId} country={country} />
 

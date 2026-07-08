@@ -58,6 +58,15 @@ export function useRankings(appId: number | null, country?: string) {
   });
 }
 
+export function useSeeds(appId: number | null, country?: string) {
+  return useQuery({
+    queryKey: ["seeds", appId, country],
+    queryFn: () =>
+      apiGet<{ seeds: string[] }>(`/app/${appId}/seeds`, { country }),
+    enabled: appId != null,
+  });
+}
+
 export function useCompetitors(appId: number | null, country?: string) {
   return useQuery({
     queryKey: ["competitors", appId, country],

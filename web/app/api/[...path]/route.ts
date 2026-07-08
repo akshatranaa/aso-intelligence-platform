@@ -17,8 +17,9 @@ async function proxy(
 ): Promise<NextResponse> {
   const { path } = await params;
   const url = new URL(`${API_BASE}/${path.join("/")}`);
+  // append (not set) so repeated params like ?kw=a&kw=b are preserved.
   req.nextUrl.searchParams.forEach((value, key) => {
-    url.searchParams.set(key, value);
+    url.searchParams.append(key, value);
   });
 
   const headers: Record<string, string> = {};

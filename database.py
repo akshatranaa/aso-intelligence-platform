@@ -255,6 +255,25 @@ def migrate() -> None:
             FROM apps
             ON CONFLICT (app_id, country) DO NOTHING
         """)
+
+        # 5. Seed keywords used for competitor discovery, editable per (app,
+        #    country). Backfilled best-effort from existing tracked ranking
+        #    keywords so already-collected apps show a seed list immediately.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS seed_keywords (
+                app_id   BIGINT NOT NULL,
+                country  TEXT NOT NULL,
+                keyword  TEXT NOT NULL,
+                PRIMARY KEY (app_id, country, keyword),
+                FOREIGN KEY (app_id) REFERENCES apps(app_id)
+            )
+        """)
+        cur.execute("""
+            INSERT INTO seed_keywords (app_id, country, keyword)
+            SELECT DISTINCT app_id, country, keyword FROM rankings
+            WHERE app_id IN (SELECT app_id FROM apps WHERE is_target_app = 1)
+            ON CONFLICT (app_id, country, keyword) DO NOTHING
+        """)
     logger.info("Multi-country migration applied (idempotent)")
 
 
@@ -943,6 +962,78 @@ def delete_competitor(
         cursor.execute("DELETE FROM apps WHERE app_id = %s", (competitor_app_id,))
     logger.info(f"Purged orphaned competitor app {competitor_app_id}")
     return True
+
+
+def get_seed_keywords(app_id: int, country: str) -> list[str]:
+    """
+    Return the competitor-discovery seed keywords for an app+country.
+
+    Args:
+        app_id:  iTunes numeric app ID.
+        country: App Store country code.
+
+    Returns:
+        Sorted list of seed keyword strings (empty if none recorded).
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT keyword FROM seed_keywords WHERE app_id = %s AND country = %s "
+            "ORDER BY keyword",
+            (app_id, country),
+        )
+        rows = cursor.fetchall()
+    return [row["keyword"] for row in rows]
+
+
+def set_seed_keywords(app_id: int, country: str, keywords: list[str]) -> None:
+    """
+    Replace the seed keyword list for an app+country.
+
+    Args:
+        app_id:   iTunes numeric app ID.
+        country:  App Store country code.
+        keywords: The complete new seed keyword list.
+    """
+    cleaned = list(dict.fromkeys(k.strip() for k in keywords if k and k.strip()))
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM seed_keywords WHERE app_id = %s AND country = %s",
+            (app_id, country),
+        )
+        for kw in cleaned:
+            cursor.execute(
+                "INSERT INTO seed_keywords (app_id, country, keyword) "
+                "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+                (app_id, country, kw),
+            )
+    logger.info(f"Set {len(cleaned)} seed keywords for app {app_id} [{country}]")
+
+
+def delete_all_competitors(target_app_id: int, country: str) -> int:
+    """
+    Delete every competitor relationship for a target+country (for re-analysis).
+
+    Only removes the competitors join rows; competitor app rows are left in place
+    (they are re-saved by the following discovery, and shared apps must survive).
+
+    Args:
+        target_app_id: The target app.
+        country:       App Store country code.
+
+    Returns:
+        Number of relationship rows deleted.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM competitors WHERE target_app_id = %s AND country = %s",
+            (target_app_id, country),
+        )
+        deleted = cursor.rowcount
+    logger.info(f"Cleared {deleted} competitors for app {target_app_id} [{country}]")
+    return deleted
 
 
 def get_competitors_last_discovered(target_app_id: int, country: str) -> str | None:
