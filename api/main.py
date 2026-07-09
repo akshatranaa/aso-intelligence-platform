@@ -175,11 +175,12 @@ def _run_rediscovery(
     job_id: str, app_id: int, keywords: list[str], use_llm: bool, country: str
 ) -> None:
     """
-    Re-run competitor discovery for an edited seed-keyword set (background task).
+    Apply an edited seed-keyword set incrementally (background task).
 
-    Saves the new seed list, clears the app+country's existing competitors, then
-    re-discovers from all provided seeds (uncapped) and re-judges — so deleted
-    keywords' unique competitors drop out and added keywords' competitors appear.
+    Diffs the new seeds against the stored ones: a removed keyword drops only the
+    competitors no surviving keyword still surfaces (no API/LLM), and an added
+    keyword searches + judges that keyword's candidates only. The first edit on an
+    app collected before the seed→competitor map existed does one full rebuild.
 
     Args:
         job_id:   _jobs key.
@@ -194,17 +195,13 @@ def _run_rediscovery(
         if not app_data:
             _jobs[job_id] = {"status": "error", "detail": f"App {app_id} not found"}
             return
-        database.set_seed_keywords(app_id, country, keywords)
-        database.delete_all_competitors(app_id, country)
-        competitor.discover_competitors(
-            app_id, keywords, use_llm=use_llm, country=country,
-            force=True, max_seeds=len(keywords),
+        total = competitor.apply_seed_edit(
+            app_id, keywords, country=country, use_llm=use_llm
         )
-        comps = database.get_competitors(app_id, country)
-        logger.info(f"Rediscovery complete for {app_id} [{country}]: {len(comps)}")
+        logger.info(f"Rediscovery complete for {app_id} [{country}]: {total}")
         _jobs[job_id] = {
             "status": "done",
-            "result": {"app_id": app_id, "country": country, "total": len(comps)},
+            "result": {"app_id": app_id, "country": country, "total": total},
         }
     except Exception as e:
         logger.error(f"Rediscovery job {job_id} failed: {e}")

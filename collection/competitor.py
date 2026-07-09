@@ -109,7 +109,7 @@ def _gather_candidates(
     target_keywords: list[str],
     country: str = config.DEFAULT_COUNTRY,
     max_seeds: int = config.COMPETITOR_SEEDS_MAX,
-) -> list[dict]:
+) -> tuple[list[dict], dict[int, set[str]]]:
     """
     Collect candidate apps from the seed-keyword searches (deduped, no target).
 
@@ -121,22 +121,24 @@ def _gather_candidates(
                          auto-derived set; the seed editor passes all curated ones).
 
     Returns:
-        List of candidate app metadata dicts.
+        (candidates, keyword_map) — the candidate app metadata dicts, and a map
+        of candidate app_id → the set of seed keywords whose search surfaced it
+        (used to record which keyword owns which competitor).
     """
-    candidate_ids: set[int] = set()
+    keyword_map: dict[int, set[str]] = {}
     for keyword in target_keywords[:max_seeds]:
         for app_id in scraper.fetch_keyword_apps(
             keyword, country=country, limit=config.COMPETITOR_CANDIDATES_PER_SEED
         ):
             if app_id != target_app_id:
-                candidate_ids.add(app_id)
+                keyword_map.setdefault(app_id, set()).add(keyword)
 
     candidates: list[dict] = []
-    for app_id in candidate_ids:
+    for app_id in keyword_map:
         app_data = database.get_app(app_id) or scraper.fetch_app_by_id(app_id, country)
         if app_data:
             candidates.append(app_data)
-    return candidates
+    return candidates, keyword_map
 
 
 def discover_competitors(
@@ -190,11 +192,49 @@ def discover_competitors(
     if target_data is None:
         logger.error(f"Could not fetch target app {target_app_id}")
         return []
-    target_category = target_data.get("category")
 
-    candidates = _gather_candidates(target_app_id, target_keywords, country, max_seeds)
+    candidates, keyword_map = _gather_candidates(
+        target_app_id, target_keywords, country, max_seeds
+    )
     if not candidates:
         return []
+
+    # A full discovery is authoritative — reset the seed map so it reflects only
+    # this run's kept competitors (incremental edits never clear the whole map).
+    database.clear_competitor_seed_map(target_app_id, country)
+    competitors = _judge_and_save(
+        target_app_id, target_data, candidates, keyword_map, country, use_llm
+    )
+    return sorted(competitors, key=lambda x: x["score"], reverse=True)
+
+
+def _judge_and_save(
+    target_app_id: int,
+    target_data: dict,
+    candidates: list[dict],
+    keyword_map: dict[int, set[str]],
+    country: str,
+    use_llm: bool,
+) -> list[dict]:
+    """
+    Judge candidates for relevance, save the kept ones, and record seed maps.
+
+    Shared by full discovery and incremental seed additions. For every kept
+    competitor it saves the app + competitor row and records a competitor_seeds
+    row for each seed keyword that surfaced it.
+
+    Args:
+        target_app_id: The target app.
+        target_data:   The target's metadata (for the judge + category tiering).
+        candidates:    Candidate app metadata dicts.
+        keyword_map:   candidate app_id → set of seed keywords that surfaced it.
+        country:       App Store country code.
+        use_llm:       Whether to use the LLM relevance judge.
+
+    Returns:
+        List of kept competitor summary dicts.
+    """
+    target_category = target_data.get("category")
 
     if use_llm:
         keep_ids = llm_analyst.judge_competitors(target_data, candidates, use_llm=True)
@@ -206,21 +246,122 @@ def discover_competitors(
     else:
         # No-LLM fallback: keep only same-category apps (coarse but avoids
         # cross-category junk without an API call).
-        target_category = target_data.get("category")
         keep_ids = {c["app_id"] for c in candidates if c.get("category") == target_category}
 
     logger.info(f"Competitor judge kept {len(keep_ids)}/{len(candidates)} candidates")
 
     competitors: list[dict] = []
+    mappings: list[tuple[str, int]] = []
     for app_data in candidates:
-        if app_data["app_id"] not in keep_ids:
+        app_id = app_data["app_id"]
+        if app_id not in keep_ids:
             continue
         score = calculate_competitor_score(app_data)
         tier = assign_tier(score, same_category=(app_data.get("category") == target_category))
         app_data["competitor_score"] = score
         app_data["competitor_tier"] = tier
         database.save_app(app_data)
-        database.save_competitor(target_app_id, app_data["app_id"], tier, score, country)
+        database.save_competitor(target_app_id, app_id, tier, score, country)
+        mappings.extend((kw, app_id) for kw in keyword_map.get(app_id, ()))
         competitors.append(_build_entry(app_data, score, tier))
 
-    return sorted(competitors, key=lambda x: x["score"], reverse=True)
+    database.record_competitor_seeds(target_app_id, country, mappings)
+    return competitors
+
+
+def apply_seed_edit(
+    target_app_id: int,
+    new_keywords: list[str],
+    country: str = config.DEFAULT_COUNTRY,
+    use_llm: bool = True,
+) -> int:
+    """
+    Apply an edited seed-keyword set incrementally, then return competitor count.
+
+    Diffs the new seed list against the stored one and only does the minimum work:
+      * removed keyword → drop its seed-map rows, then delete competitors that no
+        surviving keyword still surfaces (no API calls, no LLM).
+      * added keyword   → search + judge that keyword's candidates only, saving
+        new competitors and mapping the keyword to every competitor it surfaces.
+
+    The first edit on an app whose seed→competitor map is missing or incomplete
+    (e.g. collected before this feature) falls back to one full rebuild, which
+    repopulates the map so every later edit stays incremental.
+
+    Args:
+        target_app_id: The target app.
+        new_keywords:  The complete edited seed keyword list.
+        country:       App Store country code.
+        use_llm:       Whether to use the LLM relevance judge.
+
+    Returns:
+        The number of competitors after the edit.
+    """
+    old = set(database.get_seed_keywords(target_app_id, country))
+    cleaned = list(dict.fromkeys(k.strip() for k in new_keywords if k and k.strip()))
+    new = set(cleaned)
+    database.set_seed_keywords(target_app_id, country, cleaned)
+
+    if database.competitor_map_needs_rebuild(target_app_id, country):
+        logger.info(f"Seed map incomplete for {target_app_id} [{country}] — full rebuild")
+        database.delete_all_competitors(target_app_id, country)
+        discover_competitors(
+            target_app_id, cleaned, country=country, use_llm=use_llm,
+            force=True, max_seeds=len(cleaned),
+        )
+        return len(database.get_competitors(target_app_id, country))
+
+    removed = old - new
+    added = new - old
+
+    if removed:
+        for keyword in removed:
+            database.delete_competitor_seed_keyword(target_app_id, country, keyword)
+        orphaned = database.get_orphaned_competitors(target_app_id, country)
+        for competitor_app_id in orphaned:
+            database.delete_competitor(target_app_id, competitor_app_id, country)
+        logger.info(
+            f"Removed {len(removed)} seed(s) → dropped {len(orphaned)} competitor(s) "
+            f"for {target_app_id} [{country}]"
+        )
+
+    if added:
+        _add_seed_keywords(target_app_id, sorted(added), country, use_llm)
+
+    return len(database.get_competitors(target_app_id, country))
+
+
+def _add_seed_keywords(
+    target_app_id: int, keywords: list[str], country: str, use_llm: bool
+) -> None:
+    """
+    Discover and save competitors for newly-added seed keywords only.
+
+    Searches just the added keywords, judges their candidates, and saves the
+    survivors — mapping each added keyword to every competitor it surfaces
+    (including ones already kept from other seeds). Existing competitors are
+    left untouched.
+
+    Args:
+        target_app_id: The target app.
+        keywords:      The newly-added seed keywords.
+        country:       App Store country code.
+        use_llm:       Whether to use the LLM relevance judge.
+    """
+    target_data = scraper.fetch_app_by_id(target_app_id, country)
+    if target_data is None:
+        logger.error(f"Could not fetch target app {target_app_id} for seed add")
+        return
+    candidates, keyword_map = _gather_candidates(
+        target_app_id, keywords, country, max_seeds=len(keywords)
+    )
+    if not candidates:
+        logger.info(f"Added seed(s) surfaced no candidates for {target_app_id}")
+        return
+    kept = _judge_and_save(
+        target_app_id, target_data, candidates, keyword_map, country, use_llm
+    )
+    logger.info(
+        f"Added {len(keywords)} seed(s) → {len(kept)} competitor mapping(s) "
+        f"for {target_app_id} [{country}]"
+    )

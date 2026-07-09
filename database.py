@@ -274,6 +274,22 @@ def migrate() -> None:
             WHERE app_id IN (SELECT app_id FROM apps WHERE is_target_app = 1)
             ON CONFLICT (app_id, country, keyword) DO NOTHING
         """)
+
+        # 6. Which seed keyword surfaced which kept competitor, per (app,
+        #    country). Lets a seed removal drop only the competitors unique to
+        #    that keyword instead of re-running the whole discovery. No backfill:
+        #    the first seed edit on a pre-existing app rebuilds this map once.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS competitor_seeds (
+                target_app_id      BIGINT NOT NULL,
+                country            TEXT NOT NULL,
+                keyword            TEXT NOT NULL,
+                competitor_app_id  BIGINT NOT NULL,
+                PRIMARY KEY (target_app_id, country, keyword, competitor_app_id),
+                FOREIGN KEY (target_app_id) REFERENCES apps(app_id),
+                FOREIGN KEY (competitor_app_id) REFERENCES apps(app_id)
+            )
+        """)
     logger.info("Multi-country migration applied (idempotent)")
 
 
@@ -932,6 +948,13 @@ def delete_competitor(
             "AND competitor_app_id = %s AND country = %s",
             (target_app_id, competitor_app_id, country),
         )
+        # Drop this competitor's seed-map rows so no removed keyword still
+        # "owns" a competitor that no longer exists for this target.
+        cursor.execute(
+            "DELETE FROM competitor_seeds WHERE target_app_id = %s "
+            "AND competitor_app_id = %s AND country = %s",
+            (target_app_id, competitor_app_id, country),
+        )
 
         # Only purge the app row if nothing else references it.
         cursor.execute(
@@ -1032,8 +1055,139 @@ def delete_all_competitors(target_app_id: int, country: str) -> int:
             (target_app_id, country),
         )
         deleted = cursor.rowcount
+        cursor.execute(
+            "DELETE FROM competitor_seeds WHERE target_app_id = %s AND country = %s",
+            (target_app_id, country),
+        )
     logger.info(f"Cleared {deleted} competitors for app {target_app_id} [{country}]")
     return deleted
+
+
+def record_competitor_seeds(
+    target_app_id: int, country: str, mappings: list[tuple[str, int]]
+) -> None:
+    """
+    Record which seed keywords surfaced which kept competitors.
+
+    Args:
+        target_app_id: The target app.
+        country:       App Store country code.
+        mappings:      (keyword, competitor_app_id) pairs to record.
+    """
+    if not mappings:
+        return
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        for keyword, competitor_app_id in mappings:
+            cursor.execute(
+                "INSERT INTO competitor_seeds "
+                "(target_app_id, country, keyword, competitor_app_id) "
+                "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                (target_app_id, country, keyword, competitor_app_id),
+            )
+
+
+def delete_competitor_seed_keyword(
+    target_app_id: int, country: str, keyword: str
+) -> None:
+    """
+    Remove all seed-map rows for one keyword (used when a seed is deleted).
+
+    This does not delete any competitor rows — the caller decides which
+    competitors are now orphaned via get_orphaned_competitors.
+
+    Args:
+        target_app_id: The target app.
+        country:       App Store country code.
+        keyword:       The seed keyword being removed.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM competitor_seeds WHERE target_app_id = %s "
+            "AND country = %s AND keyword = %s",
+            (target_app_id, country, keyword),
+        )
+
+
+def clear_competitor_seed_map(target_app_id: int, country: str) -> None:
+    """
+    Remove all seed→competitor map rows for a target+country.
+
+    Called at the start of a full discovery so the rebuilt map reflects only the
+    current run (incremental seed edits never clear the whole map).
+
+    Args:
+        target_app_id: The target app.
+        country:       App Store country code.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM competitor_seeds WHERE target_app_id = %s AND country = %s",
+            (target_app_id, country),
+        )
+
+
+def get_orphaned_competitors(target_app_id: int, country: str) -> list[int]:
+    """
+    Return competitors for a target+country with no remaining seed-map row.
+
+    After deleting a seed keyword's mappings, these are the competitors that no
+    surviving keyword surfaces — safe to remove.
+
+    Args:
+        target_app_id: The target app.
+        country:       App Store country code.
+
+    Returns:
+        List of competitor app IDs that are no longer mapped to any seed.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT c.competitor_app_id AS id
+            FROM competitors c
+            WHERE c.target_app_id = %s AND c.country = %s
+              AND NOT EXISTS (
+                SELECT 1 FROM competitor_seeds s
+                WHERE s.target_app_id = c.target_app_id
+                  AND s.country = c.country
+                  AND s.competitor_app_id = c.competitor_app_id
+              )
+            """,
+            (target_app_id, country),
+        )
+        rows = cursor.fetchall()
+    return [row["id"] for row in rows]
+
+
+def competitor_map_needs_rebuild(target_app_id: int, country: str) -> bool:
+    """
+    Whether the seed→competitor map is incomplete and needs a full rebuild.
+
+    True when competitors exist but at least one has no seed-map row — i.e. an
+    app collected before this feature, or a partially-mapped state. When there
+    are no competitors the map is trivially complete (additions will populate it).
+
+    Args:
+        target_app_id: The target app.
+        country:       App Store country code.
+
+    Returns:
+        True if the next seed edit must do a full rebuild to repopulate the map.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) AS n FROM competitors "
+            "WHERE target_app_id = %s AND country = %s",
+            (target_app_id, country),
+        )
+        if cursor.fetchone()["n"] == 0:
+            return False
+    return len(get_orphaned_competitors(target_app_id, country)) > 0
 
 
 def get_competitors_last_discovered(target_app_id: int, country: str) -> str | None:
