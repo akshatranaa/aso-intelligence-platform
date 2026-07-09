@@ -26,7 +26,7 @@ const NAV = [
   { slug: "overview", label: "Overview", icon: LayoutDashboard },
   { slug: "sentiment", label: "Sentiment", icon: MessageSquareText },
   { slug: "rankings", label: "Rankings", icon: BarChart3 },
-  { slug: "competitors", label: "Competitors", icon: Trophy },
+  { slug: "competitors", label: "Top Performers", icon: Trophy },
   { slug: "recommendations", label: "Recommendations", icon: Star },
 ];
 

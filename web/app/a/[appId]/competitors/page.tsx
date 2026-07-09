@@ -101,8 +101,8 @@ function SeedKeywordsCard({ appId, country }: { appId: number; country?: string 
         )}
       </div>
       <p className="mb-3 text-xs text-neutral-500">
-        The keywords used to discover this app&apos;s competitors. Editing them and
-        confirming re-runs the competitor analysis for {countryLabel(country)}.
+        The keywords used to discover this app&apos;s top performers. Editing them and
+        confirming re-runs the analysis for {countryLabel(country)}.
       </p>
 
       {rediscovering ? (
@@ -463,7 +463,7 @@ export default function CompetitorsPage() {
 
   return (
     <div className="mx-auto max-w-6xl">
-      <PageTitle title="🏆 Competitor Analysis" subtitle={countryLabel(country)} />
+      <PageTitle title="🏆 Top Performers of App Store" subtitle={countryLabel(country)} />
 
       <SeedKeywordsCard appId={appId} country={country} />
 
