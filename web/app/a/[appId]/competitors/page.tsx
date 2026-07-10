@@ -18,7 +18,7 @@ import {
   YAxis,
   ZAxis,
 } from "recharts";
-import { Loader2, Pencil, Plus, Trash2, X } from "lucide-react";
+import { Loader2, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { apiDelete, apiPost } from "@/lib/api";
 import { usePageContext } from "@/lib/context";
 import {
@@ -49,8 +49,9 @@ function SeedKeywordsCard({ appId, country }: { appId: number; country?: string 
   const { data } = useSeeds(appId, country);
   const serverSeeds = useMemo(() => data?.seeds ?? [], [data?.seeds]);
 
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState<string[]>([]);
+  // `draft` is the working copy of the keyword list. null = "in sync with the
+  // server"; once you add/remove anything it holds your pending edits.
+  const [draft, setDraft] = useState<string[] | null>(null);
   const [newKw, setNewKw] = useState("");
   const [jobId, setJobId] = useState<string | null>(null);
   const { data: job } = useCollectJob(jobId);
@@ -61,108 +62,129 @@ function SeedKeywordsCard({ appId, country }: { appId: number; country?: string 
     if (job?.status === "done") {
       queryClient.invalidateQueries({ queryKey: ["competitors", appId, country] });
       queryClient.invalidateQueries({ queryKey: ["seeds", appId, country] });
-      setEditing(false);
+      // Reset local edit state once the save job finishes (async completion —
+      // a legitimate effect that the set-state-in-effect rule over-flags).
+      /* eslint-disable react-hooks/set-state-in-effect */
+      setDraft(null); // re-sync to the freshly saved server list
       setJobId(null);
+      /* eslint-enable react-hooks/set-state-in-effect */
     }
   }, [job?.status, appId, country, queryClient]);
 
-  const chips = editing ? draft : serverSeeds;
+  const chips = draft ?? serverSeeds;
+  const added = chips.filter((k) => !serverSeeds.includes(k));
+  const removed = serverSeeds.filter((k) => !chips.includes(k));
+  const dirty = added.length > 0 || removed.length > 0;
 
-  function addKw() {
+  const removeKw = (k: string) => setDraft(chips.filter((x) => x !== k));
+  const addKw = () => {
     const k = newKw.trim().toLowerCase();
-    if (k && !draft.includes(k)) setDraft([...draft, k]);
+    if (k && !chips.includes(k)) setDraft([...chips, k]);
     setNewKw("");
-  }
+  };
+  const reset = () => {
+    setDraft(null);
+    setNewKw("");
+  };
 
-  async function confirm() {
-    if (!draft.length) return;
+  async function save() {
+    if (!chips.length || !dirty) return;
     const res = await apiPost<{ job_id: string }>(
       `/app/${appId}/competitors/rediscover`,
-      { kw: draft, country }
+      { kw: chips, country }
     );
     if (res?.job_id) setJobId(res.job_id);
   }
 
   return (
     <Card className="mb-6">
-      <div className="mb-3 flex items-center justify-between">
-        <SectionTitle>🌱 Seed keywords</SectionTitle>
-        {!editing && !rediscovering && (
-          <Button
-            variant="outline"
-            onClick={() => {
-              setDraft(serverSeeds);
-              setNewKw("");
-              setEditing(true);
-            }}
-          >
-            <Pencil className="size-4" /> Edit
-          </Button>
-        )}
-      </div>
-      <p className="mb-3 text-xs text-neutral-500">
-        The keywords used to discover this app&apos;s top performers. Editing them and
-        confirming re-runs the analysis for {countryLabel(country)}.
+      <SectionTitle>🌱 Seed keywords</SectionTitle>
+      <p className="mb-4 text-xs text-neutral-500">
+        These keywords discover this app&apos;s top performers. Add or remove any,
+        then re-analyse for {countryLabel(country)}.
       </p>
 
       {rediscovering ? (
         <div className="flex items-center gap-2 rounded-lg border border-indigo-100 bg-indigo-50 p-4 text-sm text-indigo-800">
-          <Spinner /> Re-analysing competitors from your edited keywords… this can
-          take up to a minute.
+          <Spinner /> Re-analysing top performers from your keywords… this can take
+          up to a minute.
         </div>
       ) : (
         <>
+          {/* Each chip is deletable at all times */}
           <div className="flex flex-wrap gap-2">
             {chips.length === 0 && (
               <span className="text-sm text-neutral-400">
-                No seed keywords recorded — add some, or re-collect the app.
+                No keywords yet — add one below to run the analysis.
               </span>
             )}
-            {chips.map((k) => (
-              <span
-                key={k}
-                className="inline-flex items-center gap-1.5 rounded-full bg-neutral-100 px-3 py-1 text-sm text-neutral-700"
-              >
-                {k}
-                {editing && (
+            {chips.map((k) => {
+              const isNew = added.includes(k);
+              return (
+                <span
+                  key={k}
+                  className={cn(
+                    "group inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm transition",
+                    isNew
+                      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                      : "border-neutral-200 bg-neutral-50 text-neutral-700"
+                  )}
+                >
+                  {k}
                   <button
-                    onClick={() => setDraft(draft.filter((x) => x !== k))}
+                    onClick={() => removeKw(k)}
                     className="text-neutral-400 hover:text-red-500"
-                    title="Remove keyword"
+                    title={`Remove "${k}"`}
+                    aria-label={`Remove ${k}`}
                   >
                     <X className="size-3.5" />
                   </button>
-                )}
-              </span>
-            ))}
+                </span>
+              );
+            })}
           </div>
 
-          {editing && (
-            <>
-              <div className="mt-3 flex gap-2">
-                <Input
-                  placeholder="Add a keyword — e.g. secure vpn"
-                  value={newKw}
-                  onChange={(e) => setNewKw(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && addKw()}
-                />
-                <Button variant="outline" onClick={addKw} disabled={!newKw.trim()}>
-                  <Plus className="size-4" /> Add
-                </Button>
-              </div>
-              <div className="mt-4 flex items-center gap-2">
-                <Button onClick={confirm} disabled={draft.length === 0}>
-                  Confirm &amp; re-analyse ({draft.length})
-                </Button>
-                <Button variant="ghost" onClick={() => setEditing(false)}>
-                  Cancel
-                </Button>
-                {draft.length === 0 && (
-                  <span className="text-xs text-red-500">Keep at least one keyword.</span>
+          {/* Always-visible add box */}
+          <div className="mt-3 flex gap-2">
+            <Input
+              placeholder="Add a keyword — e.g. instant delivery"
+              value={newKw}
+              onChange={(e) => setNewKw(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && addKw()}
+            />
+            <Button variant="outline" onClick={addKw} disabled={!newKw.trim()}>
+              <Plus className="size-4" /> Add
+            </Button>
+          </div>
+
+          {/* Re-analyse only when there are pending changes */}
+          <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-neutral-100 pt-4">
+            <Button onClick={save} disabled={!dirty || chips.length === 0}>
+              <RotateCcw className="size-4" /> Save &amp; re-analyse
+            </Button>
+            {dirty && (
+              <Button variant="ghost" onClick={reset}>
+                Discard changes
+              </Button>
+            )}
+            {dirty ? (
+              <span className="text-xs text-neutral-500">
+                {added.length > 0 && (
+                  <span className="text-emerald-600">+{added.length} added</span>
                 )}
-              </div>
-            </>
-          )}
+                {added.length > 0 && removed.length > 0 && " · "}
+                {removed.length > 0 && (
+                  <span className="text-red-500">−{removed.length} removed</span>
+                )}
+                {" — unsaved"}
+              </span>
+            ) : (
+              <span className="text-xs text-neutral-400">No unsaved changes</span>
+            )}
+            {chips.length === 0 && dirty && (
+              <span className="text-xs text-red-500">Keep at least one keyword.</span>
+            )}
+          </div>
           {failed && (
             <p className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">
               Re-analysis failed: {failed}
