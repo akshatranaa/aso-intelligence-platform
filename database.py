@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 from contextlib import contextmanager
@@ -49,6 +50,7 @@ def create_tables() -> None:
                 description         TEXT,
                 release_notes       TEXT,
                 category            TEXT,
+                genres              TEXT,
                 avg_rating          REAL,
                 rating_count        INTEGER,
                 price               REAL DEFAULT 0.0,
@@ -186,6 +188,11 @@ def migrate() -> None:
         cur.execute("ALTER TABLE rankings    ADD COLUMN IF NOT EXISTS country TEXT")
         cur.execute("ALTER TABLE competitors ADD COLUMN IF NOT EXISTS country TEXT")
 
+        # 1b. Store the app's full genre list (JSON) so tiering can treat a
+        #     q-commerce app as same-category whether Apple filed its primary
+        #     genre as Food & Drink or Shopping. Backfilled lazily on next fetch.
+        cur.execute("ALTER TABLE apps ADD COLUMN IF NOT EXISTS genres TEXT")
+
         # 2. Backfill existing rows from the app's stored country (so pre-migration
         #    data keeps working, attributed to whatever it was collected as).
         cur.execute(
@@ -313,16 +320,17 @@ def save_app(app_dict: dict) -> None:
         cursor.execute(
             """
             INSERT INTO apps (
-                app_id, name, description, release_notes, category,
+                app_id, name, description, release_notes, category, genres,
                 avg_rating, rating_count, price, seller_name, bundle_id,
                 min_os_version, version, country, is_target_app,
                 competitor_tier, competitor_score, collected_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (app_id) DO UPDATE SET
                 name           = EXCLUDED.name,
                 description    = EXCLUDED.description,
                 release_notes  = EXCLUDED.release_notes,
                 category       = EXCLUDED.category,
+                genres         = EXCLUDED.genres,
                 avg_rating     = EXCLUDED.avg_rating,
                 rating_count   = EXCLUDED.rating_count,
                 price          = EXCLUDED.price,
@@ -340,6 +348,8 @@ def save_app(app_dict: dict) -> None:
                 app_dict.get("description"),
                 app_dict.get("release_notes"),
                 app_dict.get("category"),
+                # Store NULL (not "[]") when absent so it re-fetches next time.
+                json.dumps(app_dict["genres"]) if app_dict.get("genres") else None,
                 app_dict.get("avg_rating"),
                 app_dict.get("rating_count"),
                 app_dict.get("price", 0.0),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta
 
@@ -70,6 +71,56 @@ def calculate_competitor_score(app_data: dict) -> float:
     return round(final_score, 4)
 
 
+def _genre_set(app_data: dict) -> set[str]:
+    """
+    All App Store genres for an app: its primary category plus its genres list.
+
+    Handles `genres` arriving as a Python list (fresh from the scraper) or a
+    JSON string (loaded from the database), or being absent.
+
+    Args:
+        app_data: App metadata dict.
+
+    Returns:
+        Set of genre-name strings (may be empty).
+    """
+    raw = app_data.get("genres")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError):
+            raw = []
+    genres = {g for g in (raw or []) if g}
+    category = app_data.get("category")
+    if category:
+        genres.add(category)
+    return genres
+
+
+def _same_category(target_data: dict, competitor: dict) -> bool:
+    """
+    Whether a competitor shares the target's primary category, by genre overlap.
+
+    True when the target's *primary* category appears anywhere in the
+    competitor's genres (primary or secondary). This keeps q-commerce rivals
+    together even though Apple files some under "Food & Drink" and others under
+    "Shopping" — while still excluding general Shopping apps (ZARA, Amazon) that
+    don't list the target's primary genre at all.
+
+    Only the target's primary genre is matched (not its secondary genres), so a
+    grocery app that also lists "Shopping" doesn't sweep in every retail app.
+
+    Args:
+        target_data: The target app's metadata (with category + genres).
+        competitor:  A candidate competitor's metadata.
+
+    Returns:
+        True if the competitor lists the target's primary category as a genre.
+    """
+    target_category = target_data.get("category")
+    return bool(target_category and target_category in _genre_set(competitor))
+
+
 def assign_tier(score: float, same_category: bool = True) -> str:
     """
     Split judged competitors into tier1 (big + same-category) and tier2.
@@ -135,7 +186,11 @@ def _gather_candidates(
 
     candidates: list[dict] = []
     for app_id in keyword_map:
-        app_data = database.get_app(app_id) or scraper.fetch_app_by_id(app_id, country)
+        app_data = database.get_app(app_id)
+        # Re-fetch from the API when the app is unknown, or was cached before the
+        # genres column existed — so tiering always has the full genre list.
+        if app_data is None or app_data.get("genres") is None:
+            app_data = scraper.fetch_app_by_id(app_id, country) or app_data
         if app_data:
             candidates.append(app_data)
     return candidates, keyword_map
@@ -234,8 +289,6 @@ def _judge_and_save(
     Returns:
         List of kept competitor summary dicts.
     """
-    target_category = target_data.get("category")
-
     if use_llm:
         keep_ids = llm_analyst.judge_competitors(target_data, candidates, use_llm=True)
         if keep_ids is None:
@@ -246,7 +299,7 @@ def _judge_and_save(
     else:
         # No-LLM fallback: keep only same-category apps (coarse but avoids
         # cross-category junk without an API call).
-        keep_ids = {c["app_id"] for c in candidates if c.get("category") == target_category}
+        keep_ids = {c["app_id"] for c in candidates if _same_category(target_data, c)}
 
     logger.info(f"Competitor judge kept {len(keep_ids)}/{len(candidates)} candidates")
 
@@ -257,7 +310,7 @@ def _judge_and_save(
         if app_id not in keep_ids:
             continue
         score = calculate_competitor_score(app_data)
-        tier = assign_tier(score, same_category=(app_data.get("category") == target_category))
+        tier = assign_tier(score, same_category=_same_category(target_data, app_data))
         app_data["competitor_score"] = score
         app_data["competitor_tier"] = tier
         database.save_app(app_data)
