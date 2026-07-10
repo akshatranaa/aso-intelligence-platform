@@ -433,12 +433,29 @@ export default function CompetitorsPage() {
         .sort((a, b) => (b.competitor_score ?? 0) - (a.competitor_score ?? 0))
         .slice(0, 15)
         .map((c) => ({
+          app_id: c.app_id,
+          fullName: c.name,
           name: c.name.length > 24 ? c.name.slice(0, 24) + "…" : c.name,
           score: c.competitor_score ?? 0,
           fill: c.competitor_tier === "tier1" ? "#4f46e5" : "#a5b4fc",
         })),
     [all]
   );
+
+  // Click a bar to permanently remove that competitor (same endpoint as the
+  // tier-table trash button). Confirm first — a stray click deletes for real.
+  const removeFromChart = (datum: { app_id?: number; fullName?: string }) => {
+    const id = datum?.app_id;
+    if (id == null || removeCompetitor.isPending) return;
+    if (
+      window.confirm(
+        `Remove "${datum.fullName ?? "this competitor"}" from your top performers?\n\n` +
+          "This deletes it permanently from the database for this country."
+      )
+    ) {
+      removeCompetitor.mutate(id);
+    }
+  };
 
   const scatterData = useMemo(
     () =>
@@ -497,7 +514,21 @@ export default function CompetitorsPage() {
                   tick={{ fontSize: 12 }}
                 />
                 <Tooltip />
-                <Bar dataKey="score" radius={[0, 6, 6, 0]}>
+                <Bar
+                  dataKey="score"
+                  radius={[0, 6, 6, 0]}
+                  cursor="pointer"
+                  onClick={(data) => {
+                    // Recharts puts the original datum on `.payload`; fall back to
+                    // the item itself since the data keys are spread onto it too.
+                    const d = data as unknown as {
+                      app_id?: number;
+                      fullName?: string;
+                      payload?: { app_id?: number; fullName?: string };
+                    };
+                    removeFromChart(d.payload ?? d);
+                  }}
+                >
                   {chartData.map((d, i) => (
                     <Cell key={i} fill={d.fill} />
                   ))}
@@ -508,9 +539,10 @@ export default function CompetitorsPage() {
               <span className="mr-3 inline-flex items-center gap-1">
                 <span className="size-2.5 rounded-full bg-indigo-600" /> Tier 1
               </span>
-              <span className="inline-flex items-center gap-1">
+              <span className="mr-3 inline-flex items-center gap-1">
                 <span className="size-2.5 rounded-full bg-indigo-300" /> Tier 2
               </span>
+              · Click a bar to remove that competitor permanently
             </p>
           </Card>
 
