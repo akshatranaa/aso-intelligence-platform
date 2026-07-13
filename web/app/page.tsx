@@ -9,11 +9,13 @@ import { ChevronRight, Loader2, Search, X } from "lucide-react";
 import { apiGet, apiPost } from "@/lib/api";
 import { useApps, useCollectJob } from "@/lib/hooks";
 import { COUNTRIES, countryLabel } from "@/lib/countries";
+import { requestNotifyPermission, useJobTabNotifier } from "@/lib/use-job-tab-notifier";
 import type { AppSearchResult, CollectStart } from "@/lib/types";
 import {
   Button,
   Card,
   CheckboxRow,
+  cn,
   EmptyState,
   Input,
   PageTitle,
@@ -83,11 +85,16 @@ export default function HomePage() {
   const { data: job } = useCollectJob(jobId);
   const running = jobId != null && (!job || job.status === "running");
 
+  // Reflects job progress in the tab (animated favicon; checkmark/error +
+  // notification if the user switches away while it's running).
+  useJobTabNotifier(jobId ? job?.status : undefined, `Collected ${name.trim()}`);
+
   async function startCollect() {
     if (!name.trim()) return;
     setShowSuggestions(false);
     setStartError(null);
     setElapsed(0);
+    requestNotifyPermission(); // ask now, while we have a user gesture
     try {
       const start = await apiPost<CollectStart>(
         `/collect/${encodeURIComponent(name.trim())}`,
@@ -247,9 +254,34 @@ export default function HomePage() {
                 <p className="flex items-center gap-2 font-medium">
                   <Spinner /> Collecting “{name.trim()}” for {countryLabel(country)}…
                 </p>
-                <p className="mt-1 text-xs text-indigo-600">
-                  Full pipeline (metadata, competitors, reviews, rankings) — takes a
-                  few minutes due to Apple API rate limits. {elapsed}s elapsed.
+
+                <div className="mt-3 flex items-center gap-1.5">
+                  {Array.from(
+                    { length: job?.step_total ?? 5 },
+                    (_, i) => i + 1
+                  ).map((i) => (
+                    <span
+                      key={i}
+                      className={cn(
+                        "h-1.5 flex-1 rounded-full transition-colors duration-500",
+                        job?.step_index && i <= job.step_index
+                          ? "bg-indigo-500"
+                          : "bg-indigo-100"
+                      )}
+                    />
+                  ))}
+                </div>
+                <p className="mt-2 text-xs font-medium text-indigo-700">
+                  {job?.step ?? "Starting…"}
+                  {job?.step_index && job?.step_total
+                    ? ` (${job.step_index}/${job.step_total})`
+                    : ""}
+                </p>
+
+                <p className="mt-2 text-xs text-indigo-600">
+                  Takes a few minutes due to Apple API rate limits — feel free to
+                  switch tabs, we’ll flag the tab and notify you when it’s done.{" "}
+                  {elapsed}s elapsed.
                 </p>
               </div>
             )}

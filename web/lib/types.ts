@@ -144,6 +144,10 @@ export interface CollectJob {
   job_id: string;
   status: "running" | "done" | "error";
   detail?: string;
+  /** Human-readable description of the pipeline stage currently running. */
+  step?: string;
+  step_index?: number;
+  step_total?: number;
   result?: {
     app_id: number;
     app_name: string;

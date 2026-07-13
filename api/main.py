@@ -65,6 +65,25 @@ def _startup() -> None:
         logger.error(f"Startup schema init failed: {e}")
 
 
+def _set_progress(job_id: str, step: str, index: int, total: int = 5) -> None:
+    """
+    Update a running job's progress step, preserving its other fields.
+
+    Args:
+        job_id: _jobs key.
+        step:   Human-readable description of the stage now running.
+        index:  1-based position of this stage (for a progress indicator).
+        total:  Total number of stages.
+    """
+    if job_id in _jobs:
+        _jobs[job_id] = {
+            **_jobs[job_id],
+            "step": step,
+            "step_index": index,
+            "step_total": total,
+        }
+
+
 def _run_collection(
     job_id: str,
     app_name: str,
@@ -91,6 +110,7 @@ def _run_collection(
     """
     try:
         database.create_tables()
+        _set_progress(job_id, "Looking up app metadata…", 1)
 
         # Prefer an exact lookup by the picked ID; fall back to a name search.
         if app_id is not None:
@@ -126,22 +146,26 @@ def _run_collection(
 
         if reuse:
             seed_keywords, used_llm_seeds = [], True
+            _set_progress(job_id, "Reusing cached competitors…", 2)
             logger.info(
                 f"Re-collect fast path for {app_id} [{country}]: reusing seeds + "
                 f"competitors, refreshing reviews/rankings only"
             )
         else:
+            _set_progress(job_id, "Deriving keyword seeds…", 2)
             # Derive seeds once and reuse everywhere (one LLM call, consistent status).
             seed_keywords, used_llm_seeds = seeds.derive_seed_keywords(
                 app_data, use_llm=use_llm
             )
             # Persist the seeds used, so they're editable on the Competitors page.
             database.set_seed_keywords(app_id, country, seed_keywords)
+            _set_progress(job_id, "Discovering & scoring competitors…", 2)
 
         competitor.discover_competitors(
             app_id, seed_keywords, use_llm=use_llm, country=country, force=force
         )
 
+        _set_progress(job_id, "Fetching recent reviews…", 3)
         reviews = scraper.fetch_reviews(app_id, country)
         collected_at = datetime.now().isoformat()
         for review in reviews:
@@ -150,10 +174,12 @@ def _run_collection(
             review["collected_at"] = collected_at
         review_count = database.save_reviews(reviews)
 
+        _set_progress(job_id, "Scoring review sentiment…", 4)
         sentiment_summary = sentiment.score_all_reviews(
             app_id, use_llm=use_llm, country=country
         )
 
+        _set_progress(job_id, "Tracking keyword rankings…", 5)
         # Rank-track the seed keywords plus any keyword already tracked for this
         # app+country (custom-added keywords keep refreshing so velocity accrues).
         tracked = list(dict.fromkeys(list(seed_keywords) + existing_tracked))
