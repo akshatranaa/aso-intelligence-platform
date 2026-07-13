@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import config
 import database
 from analysis import rank_tracker, recommendations, seeds, sentiment
+from api.auth import get_current_user, require_app_membership
 from collection import competitor, scraper
 
 logging.basicConfig(level=config.LOG_LEVEL, format=config.LOG_FORMAT)
@@ -70,6 +71,7 @@ def _run_collection(
     use_llm: bool,
     country: str = config.DEFAULT_COUNTRY,
     force: bool = False,
+    user_id: str | None = None,
 ) -> None:
     """
     Run the full collection pipeline and record its outcome in _jobs.
@@ -81,6 +83,7 @@ def _run_collection(
         country:  App Store country code to collect for.
         force:    Re-discover competitors even if a recent result exists (also
                   forces seed regeneration).
+        user_id:  Supabase user the collected app is assigned to (ownership).
     """
     try:
         database.create_tables()
@@ -96,6 +99,9 @@ def _run_collection(
         app_data["is_target_app"] = 1
         database.save_app(app_data)
         app_id = app_data["app_id"]
+        # Assign the app to the collecting user so it shows in their list.
+        if user_id:
+            database.add_user_app(user_id, app_id)
         logger.info(f"Collecting data for {app_data['name']} ({app_id}) [{country}]")
 
         # Fast path: if this app+country was already collected recently (competitors
@@ -220,15 +226,15 @@ def health_check() -> dict:
 
 
 @app.get("/apps")
-def list_apps() -> dict:
+def list_apps(user: dict = Depends(get_current_user)) -> dict:
     """
-    List all collected target apps (for the frontend app switcher).
+    List the collected target apps owned by the authenticated user.
 
     Returns:
         Dict with a list of {app_id, name, category, countries} entries,
         sorted by name.
     """
-    targets = [a for a in database.get_all_apps() if a.get("is_target_app") == 1]
+    targets = database.get_user_apps(user["id"])
     apps = [
         {
             "app_id":    a["app_id"],
@@ -242,7 +248,12 @@ def list_apps() -> dict:
 
 
 @app.get("/search")
-def search_apps(term: str, country: str = config.DEFAULT_COUNTRY, limit: int = 8) -> dict:
+def search_apps(
+    term: str,
+    country: str = config.DEFAULT_COUNTRY,
+    limit: int = 8,
+    user: dict = Depends(get_current_user),
+) -> dict:
     """
     App Store search suggestions for the collect-form autocomplete.
 
@@ -261,7 +272,7 @@ def search_apps(term: str, country: str = config.DEFAULT_COUNTRY, limit: int = 8
     return {"results": results}
 
 
-@app.get("/app/{app_id}")
+@app.get("/app/{app_id}", dependencies=[Depends(require_app_membership)])
 def get_app(app_id: int, country: Optional[str] = None) -> dict:
     """
     Fetch metadata for one app, optionally with per-country metrics.
@@ -289,7 +300,7 @@ def get_app(app_id: int, country: Optional[str] = None) -> dict:
     return app_data
 
 
-@app.get("/app/{app_id}/countries")
+@app.get("/app/{app_id}/countries", dependencies=[Depends(require_app_membership)])
 def get_app_countries(app_id: int) -> dict:
     """
     List the App Store countries an app has been collected for.
@@ -306,23 +317,25 @@ def get_app_countries(app_id: int) -> dict:
 
 
 @app.post("/app/{app_id}/untrack", dependencies=[Depends(verify_api_key)])
-def untrack_app(app_id: int) -> dict:
+def untrack_app(app_id: int, user: dict = Depends(require_app_membership)) -> dict:
     """
-    Remove an app from the tracked list without deleting its collected data.
+    Remove an app from the user's list without deleting its collected data.
+
+    Only drops this user's ownership — other users who collected the same app
+    keep it, and the app's collected data is preserved.
 
     Args:
         app_id: iTunes numeric app ID.
+        user:   The authenticated owner (injected).
 
     Returns:
-        Dict confirming the app is untracked.
+        Dict confirming the app is untracked for this user.
     """
-    if not database.get_app(app_id):
-        raise HTTPException(status_code=404, detail=f"App {app_id} not found")
-    database.untrack_app(app_id)
+    database.remove_user_app(user["id"], app_id)
     return {"app_id": app_id, "untracked": True}
 
 
-@app.get("/app/{app_id}/reviews")
+@app.get("/app/{app_id}/reviews", dependencies=[Depends(require_app_membership)])
 def get_reviews(app_id: int, country: Optional[str] = None) -> dict:
     """
     Fetch stored reviews for an app, optionally scoped to one country.
@@ -340,7 +353,7 @@ def get_reviews(app_id: int, country: Optional[str] = None) -> dict:
     return {"app_id": app_id, "total": len(reviews), "reviews": reviews}
 
 
-@app.get("/app/{app_id}/sentiment")
+@app.get("/app/{app_id}/sentiment", dependencies=[Depends(require_app_membership)])
 def get_sentiment(app_id: int, country: Optional[str] = None) -> dict:
     """
     Fetch pre-computed sentiment summary for an app, optionally per country.
@@ -365,7 +378,7 @@ def get_sentiment(app_id: int, country: Optional[str] = None) -> dict:
     return summary
 
 
-@app.get("/app/{app_id}/rankings")
+@app.get("/app/{app_id}/rankings", dependencies=[Depends(require_app_membership)])
 def get_rankings(app_id: int, country: Optional[str] = None) -> dict:
     """
     Fetch ranking summary with trends for all tracked keywords.
@@ -388,7 +401,10 @@ def _resolve_country(app_data: dict, country: Optional[str]) -> str:
     return country or app_data.get("country") or config.DEFAULT_COUNTRY
 
 
-@app.post("/app/{app_id}/rankings/track", dependencies=[Depends(verify_api_key)])
+@app.post(
+    "/app/{app_id}/rankings/track",
+    dependencies=[Depends(verify_api_key), Depends(require_app_membership)],
+)
 def track_keyword(app_id: int, keyword: str, country: Optional[str] = None) -> dict:
     """
     Start rank-tracking a custom keyword for an app (one live snapshot).
@@ -414,7 +430,10 @@ def track_keyword(app_id: int, keyword: str, country: Optional[str] = None) -> d
     return {"app_id": app_id, "total": len(summary), "rankings": summary}
 
 
-@app.post("/app/{app_id}/rankings/refresh", dependencies=[Depends(verify_api_key)])
+@app.post(
+    "/app/{app_id}/rankings/refresh",
+    dependencies=[Depends(verify_api_key), Depends(require_app_membership)],
+)
 def refresh_rankings(app_id: int, country: Optional[str] = None) -> dict:
     """
     Re-snapshot every tracked keyword for an app without a full collection.
@@ -439,7 +458,10 @@ def refresh_rankings(app_id: int, country: Optional[str] = None) -> dict:
     return {"app_id": app_id, "total": len(summary), "rankings": summary}
 
 
-@app.delete("/app/{app_id}/rankings/keyword", dependencies=[Depends(verify_api_key)])
+@app.delete(
+    "/app/{app_id}/rankings/keyword",
+    dependencies=[Depends(verify_api_key), Depends(require_app_membership)],
+)
 def remove_keyword(app_id: int, keyword: str, country: Optional[str] = None) -> dict:
     """
     Stop tracking a keyword — delete its ranking rows for the app+country.
@@ -461,7 +483,7 @@ def remove_keyword(app_id: int, keyword: str, country: Optional[str] = None) -> 
     return {"app_id": app_id, "total": len(summary), "rankings": summary}
 
 
-@app.get("/app/{app_id}/rankings/compare")
+@app.get("/app/{app_id}/rankings/compare", dependencies=[Depends(require_app_membership)])
 def compare_competitor_ranks(
     app_id: int,
     keyword: str,
@@ -498,7 +520,7 @@ def compare_competitor_ranks(
     )
 
 
-@app.get("/app/{app_id}/competitors")
+@app.get("/app/{app_id}/competitors", dependencies=[Depends(require_app_membership)])
 def get_competitors(app_id: int, country: Optional[str] = None) -> dict:
     """
     Fetch all discovered competitor apps split by tier.
@@ -525,7 +547,7 @@ def get_competitors(app_id: int, country: Optional[str] = None) -> dict:
 
 @app.delete(
     "/app/{app_id}/competitors/{competitor_app_id}",
-    dependencies=[Depends(verify_api_key)],
+    dependencies=[Depends(verify_api_key), Depends(require_app_membership)],
 )
 def remove_competitor(
     app_id: int, competitor_app_id: int, country: Optional[str] = None
@@ -549,7 +571,7 @@ def remove_competitor(
     return {"app_id": app_id, "removed": competitor_app_id, "purged": purged}
 
 
-@app.get("/app/{app_id}/seeds")
+@app.get("/app/{app_id}/seeds", dependencies=[Depends(require_app_membership)])
 def get_seeds(app_id: int, country: Optional[str] = None) -> dict:
     """
     Fetch the competitor-discovery seed keywords for an app+country.
@@ -574,7 +596,7 @@ def get_seeds(app_id: int, country: Optional[str] = None) -> dict:
 
 @app.post(
     "/app/{app_id}/competitors/rediscover",
-    dependencies=[Depends(verify_api_key)],
+    dependencies=[Depends(verify_api_key), Depends(require_app_membership)],
 )
 def rediscover_competitors(
     app_id: int,
@@ -582,6 +604,7 @@ def rediscover_competitors(
     kw: list[str] = Query(default=[]),
     country: Optional[str] = None,
     use_llm: bool = True,
+    user: dict = Depends(get_current_user),
 ) -> dict:
     """
     Re-run competitor discovery for an edited seed-keyword set (background job).
@@ -606,14 +629,14 @@ def rediscover_competitors(
         raise HTTPException(status_code=400, detail="At least one seed keyword is required")
     resolved = _resolve_country(app_data, country)
     job_id = str(uuid.uuid4())
-    _jobs[job_id] = {"status": "running"}
+    _jobs[job_id] = {"status": "running", "user_id": user["id"]}
     background_tasks.add_task(
         _run_rediscovery, job_id, app_id, keywords, use_llm, resolved
     )
     return {"job_id": job_id, "status": "running"}
 
 
-@app.get("/app/{app_id}/recommendations")
+@app.get("/app/{app_id}/recommendations", dependencies=[Depends(require_app_membership)])
 def get_recommendations(
     app_id: int, use_llm: bool = False, country: Optional[str] = None
 ) -> dict:
@@ -643,6 +666,7 @@ def collect_app(
     use_llm: bool = False,
     country: str = config.DEFAULT_COUNTRY,
     force: bool = False,
+    user: dict = Depends(get_current_user),
 ) -> dict:
     """
     Start the full collection and analysis pipeline for an app in the background.
@@ -662,24 +686,29 @@ def collect_app(
         Dict with job_id and initial status.
     """
     job_id = str(uuid.uuid4())
-    _jobs[job_id] = {"status": "running"}
-    background_tasks.add_task(_run_collection, job_id, app_name, use_llm, country, force)
+    _jobs[job_id] = {"status": "running", "user_id": user["id"]}
+    background_tasks.add_task(
+        _run_collection, job_id, app_name, use_llm, country, force, user["id"]
+    )
     return {"job_id": job_id, "status": "running"}
 
 
 @app.get("/collect/status/{job_id}")
-def get_collect_status(job_id: str) -> dict:
+def get_collect_status(
+    job_id: str, user: dict = Depends(get_current_user)
+) -> dict:
     """
-    Poll the status of a background collection job.
+    Poll the status of a background collection job (owner only).
 
     Args:
         job_id: ID returned by POST /collect/{app_name}.
+        user:   The authenticated user (must own the job).
 
     Returns:
         Dict with status ("running", "done", or "error") and, once
         finished, either a result dict or an error detail string.
     """
     job = _jobs.get(job_id)
-    if not job:
+    if not job or job.get("user_id") not in (None, user["id"]):
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-    return {"job_id": job_id, **job}
+    return {"job_id": job_id, **{k: v for k, v in job.items() if k != "user_id"}}

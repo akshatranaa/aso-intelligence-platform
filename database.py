@@ -297,6 +297,19 @@ def migrate() -> None:
                 FOREIGN KEY (competitor_app_id) REFERENCES apps(app_id)
             )
         """)
+
+        # 7. Per-user app ownership. user_id is a Supabase Auth user UUID (from
+        #    auth.users, a Supabase-managed schema — so no foreign key to it).
+        #    Lets each account see only the apps it collected/loaded.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS user_apps (
+                user_id     UUID NOT NULL,
+                app_id      BIGINT NOT NULL,
+                created_at  TEXT NOT NULL,
+                PRIMARY KEY (user_id, app_id),
+                FOREIGN KEY (app_id) REFERENCES apps(app_id)
+            )
+        """)
     logger.info("Multi-country migration applied (idempotent)")
 
 
@@ -500,6 +513,81 @@ def get_all_apps() -> list[dict]:
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM apps")
+        rows = cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+def add_user_app(user_id: str, app_id: int) -> None:
+    """
+    Record that a user owns (has collected/loaded) an app.
+
+    Args:
+        user_id: Supabase Auth user UUID.
+        app_id:  iTunes numeric app ID (must already exist in apps).
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO user_apps (user_id, app_id, created_at) "
+            "VALUES (%s, %s, %s) ON CONFLICT (user_id, app_id) DO NOTHING",
+            (user_id, app_id, datetime.now().isoformat()),
+        )
+
+
+def remove_user_app(user_id: str, app_id: int) -> None:
+    """
+    Remove a user's ownership of an app (does not delete the app's data).
+
+    Args:
+        user_id: Supabase Auth user UUID.
+        app_id:  iTunes numeric app ID.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM user_apps WHERE user_id = %s AND app_id = %s",
+            (user_id, app_id),
+        )
+
+
+def user_owns_app(user_id: str, app_id: int) -> bool:
+    """
+    Whether a user owns (has collected/loaded) a given app.
+
+    Args:
+        user_id: Supabase Auth user UUID.
+        app_id:  iTunes numeric app ID.
+
+    Returns:
+        True if a user_apps row links the two.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT 1 FROM user_apps WHERE user_id = %s AND app_id = %s LIMIT 1",
+            (user_id, app_id),
+        )
+        return cursor.fetchone() is not None
+
+
+def get_user_apps(user_id: str) -> list[dict]:
+    """
+    Fetch the target apps a user owns, joined with app metadata.
+
+    Args:
+        user_id: Supabase Auth user UUID.
+
+    Returns:
+        List of app rows this user has collected/loaded (target apps only).
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT a.* FROM apps a "
+            "JOIN user_apps u ON u.app_id = a.app_id "
+            "WHERE u.user_id = %s AND a.is_target_app = 1",
+            (user_id,),
+        )
         rows = cursor.fetchall()
     return [dict(row) for row in rows]
 

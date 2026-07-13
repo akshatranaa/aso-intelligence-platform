@@ -14,11 +14,13 @@ import {
   BarChart3,
   Home,
   LayoutDashboard,
+  LogOut,
   MessageSquareText,
   Star,
   Trophy,
 } from "lucide-react";
 import { useApps } from "@/lib/hooks";
+import { useAuth } from "@/lib/auth";
 import { COUNTRIES, countryLabel } from "@/lib/countries";
 import { cn, Select } from "@/components/ui";
 
@@ -98,10 +100,29 @@ export function Sidebar() {
           );
         })}
       </nav>
+      <UserFooter />
       <p className="px-5 pb-4 text-xs text-neutral-400">
         Powered by Apple public APIs + AI
       </p>
     </aside>
+  );
+}
+
+function UserFooter() {
+  const { user, signOut } = useAuth();
+  if (!user) return null;
+  return (
+    <div className="mx-3 mb-2 border-t border-neutral-100 pt-3">
+      <p className="truncate px-2 text-xs text-neutral-500" title={user.email ?? ""}>
+        {user.email}
+      </p>
+      <button
+        onClick={() => signOut()}
+        className="mt-1 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm font-medium text-neutral-600 hover:bg-neutral-100"
+      >
+        <LogOut className="size-4" /> Sign out
+      </button>
+    </div>
   );
 }
 

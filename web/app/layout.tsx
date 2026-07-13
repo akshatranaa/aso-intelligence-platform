@@ -1,9 +1,8 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import { Suspense } from "react";
 import "./globals.css";
 import { Providers } from "@/components/providers";
-import { Sidebar, Topbar } from "@/components/shell";
+import { AppFrame } from "@/components/app-frame";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -32,18 +31,7 @@ export default function RootLayout({
     >
       <body className="min-h-full font-sans">
         <Providers>
-          <div className="flex min-h-screen">
-            {/* Sidebar/Topbar read the URL (useSearchParams) — needs Suspense */}
-            <Suspense>
-              <Sidebar />
-            </Suspense>
-            <div className="flex min-w-0 flex-1 flex-col">
-              <Suspense>
-                <Topbar />
-              </Suspense>
-              <main className="flex-1 px-8 py-6">{children}</main>
-            </div>
-          </div>
+          <AppFrame>{children}</AppFrame>
         </Providers>
       </body>
     </html>

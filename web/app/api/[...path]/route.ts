@@ -24,6 +24,9 @@ async function proxy(
 
   const headers: Record<string, string> = {};
   if (API_KEY) headers["X-API-Key"] = API_KEY;
+  // Forward the user's Supabase bearer token so the backend can identify them.
+  const auth = req.headers.get("authorization");
+  if (auth) headers["Authorization"] = auth;
 
   try {
     const upstream = await fetch(url, {

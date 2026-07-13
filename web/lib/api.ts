@@ -1,5 +1,7 @@
 /** Thin fetch wrapper for the same-origin /api proxy. */
 
+import { supabase } from "./supabase";
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, detail: string) {
@@ -22,7 +24,13 @@ async function request<T>(
       else url.searchParams.set(k, String(v));
     }
   }
-  const res = await fetch(url, { method });
+  // Attach the Supabase access token so the backend can identify the user.
+  const { data } = await supabase.auth.getSession();
+  const headers: Record<string, string> = {};
+  if (data.session?.access_token) {
+    headers["Authorization"] = `Bearer ${data.session.access_token}`;
+  }
+  const res = await fetch(url, { method, headers });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new ApiError(res.status, body?.detail ?? `API error ${res.status}`);
