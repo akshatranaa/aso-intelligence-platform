@@ -11,7 +11,6 @@ import { useApps, useCollectJob } from "@/lib/hooks";
 import { COUNTRIES, countryLabel } from "@/lib/countries";
 import type { AppSearchResult, CollectStart } from "@/lib/types";
 import {
-  Badge,
   Button,
   Card,
   CheckboxRow,
@@ -36,6 +35,10 @@ export default function HomePage() {
   const [startError, setStartError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
 
+  // ── Load a saved app (select app + country, then open) ──────────────────
+  const [loadAppId, setLoadAppId] = useState<number | null>(null);
+  const [loadCountry, setLoadCountry] = useState("");
+
   // ── App-name autocomplete ──────────────────────────────────────────────
   const [suggestions, setSuggestions] = useState<AppSearchResult[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -48,6 +51,7 @@ export default function HomePage() {
     }
     const term = name.trim();
     if (term.length < 2) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSuggestions([]);
       return;
     }
@@ -110,6 +114,24 @@ export default function HomePage() {
 
   const done = job?.status === "done" ? job.result : null;
   const failed = job?.status === "error" ? (job.detail ?? "Unknown error") : null;
+
+  // Selected saved app + its countries, derived (falls back to the first app so
+  // the form is always populated once apps load).
+  const apps = appsData?.apps ?? [];
+  const selectedApp = apps.find((a) => a.app_id === loadAppId) ?? apps[0];
+  const loadCountries = selectedApp?.countries ?? [];
+  const effectiveCountry = loadCountries.includes(loadCountry)
+    ? loadCountry
+    : (loadCountries[0] ?? "");
+
+  function loadApp() {
+    if (!selectedApp) return;
+    router.push(
+      `/a/${selectedApp.app_id}/overview${
+        effectiveCountry ? `?country=${effectiveCountry}` : ""
+      }`
+    );
+  }
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -258,56 +280,80 @@ export default function HomePage() {
           </div>
         </Card>
 
-        {/* ── Collected apps ──────────────────────────────────────────── */}
+        {/* ── Load a saved app ────────────────────────────────────────── */}
         <Card className="lg:col-span-2">
-          <SectionTitle>📂 Your apps</SectionTitle>
+          <SectionTitle>📂 Load a saved app</SectionTitle>
           {appsLoading ? (
             <div className="flex justify-center py-8">
               <Spinner className="size-6" />
             </div>
-          ) : !appsData?.apps.length ? (
+          ) : !apps.length ? (
             <EmptyState>No apps collected yet — collect your first one.</EmptyState>
           ) : (
-            <ul className="divide-y divide-neutral-100">
-              {appsData.apps.map((a) => (
-                <li key={a.app_id} className="group flex items-center gap-1">
-                  <button
-                    onClick={() =>
-                      router.push(
-                        `/a/${a.app_id}/overview${
-                          a.countries[0] ? `?country=${a.countries[0]}` : ""
-                        }`
-                      )
-                    }
-                    className="flex min-w-0 flex-1 items-center justify-between gap-2 rounded-lg px-2 py-2.5 text-left hover:bg-neutral-50"
-                  >
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-medium text-neutral-900">
-                        {a.name}
-                      </span>
-                      <span className="block text-xs text-neutral-400">
-                        {a.category ?? "—"}
-                      </span>
-                    </span>
-                    <span className="flex shrink-0 items-center gap-1">
-                      {a.countries.map((c) => (
-                        <Badge key={c} color="indigo">
-                          {c.toUpperCase()}
-                        </Badge>
-                      ))}
-                    </span>
-                  </button>
-                  <button
-                    onClick={() => untrack.mutate(a.app_id)}
-                    disabled={untrack.isPending}
-                    title="Remove from list (keeps collected data)"
-                    className="shrink-0 rounded-lg p-2 text-neutral-300 hover:bg-red-50 hover:text-red-500"
-                  >
-                    <X className="size-4" />
-                  </button>
-                </li>
-              ))}
-            </ul>
+            <div className="space-y-4">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-neutral-500">
+                  App
+                </label>
+                <Select
+                  value={selectedApp?.app_id ?? ""}
+                  onChange={(e) => {
+                    setLoadAppId(Number(e.target.value));
+                    setLoadCountry(""); // reset — pick the new app's first country
+                  }}
+                >
+                  {apps.map((a) => (
+                    <option key={a.app_id} value={a.app_id}>
+                      {a.name}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-medium text-neutral-500">
+                  Country
+                </label>
+                <Select
+                  value={effectiveCountry}
+                  onChange={(e) => setLoadCountry(e.target.value)}
+                  disabled={loadCountries.length === 0}
+                >
+                  {loadCountries.map((c) => (
+                    <option key={c} value={c}>
+                      {countryLabel(c)}
+                    </option>
+                  ))}
+                </Select>
+                <p className="mt-1 text-xs text-neutral-400">
+                  Only the countries this app has been collected for.
+                </p>
+              </div>
+
+              <Button onClick={loadApp} disabled={!selectedApp} className="w-full">
+                Load analysis <ChevronRight className="size-4" />
+              </Button>
+
+              <button
+                onClick={() => {
+                  if (!selectedApp) return;
+                  if (
+                    window.confirm(
+                      `Are you sure you want to remove "${selectedApp.name}"?\n\n` +
+                        "It will disappear from your saved apps. Its collected " +
+                        "data is kept — re-collect it any time to bring it back."
+                    )
+                  ) {
+                    untrack.mutate(selectedApp.app_id);
+                    setLoadAppId(null);
+                  }
+                }}
+                disabled={!selectedApp || untrack.isPending}
+                className="flex w-full items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs text-neutral-400 hover:text-red-500"
+              >
+                <X className="size-3.5" /> Remove this app from the list
+              </button>
+            </div>
           )}
         </Card>
       </div>
