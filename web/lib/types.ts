@@ -40,6 +40,9 @@ export interface SentimentSummary {
   negative_pct: number;
   neutral_pct: number;
   avg_rating: number;
+  /** Official App Store average — all ratings incl. silent star-only taps. */
+  store_avg_rating: number | null;
+  store_rating_count: number | null;
 }
 
 export interface Review {

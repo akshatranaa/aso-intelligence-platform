@@ -262,7 +262,10 @@ def get_sentiment_summary(app_id: int, country: str | None = None) -> dict | Non
         country: If given, only reviews collected for that App Store country.
 
     Returns:
-        Aggregate sentiment dict, or None if no scored reviews exist.
+        Aggregate sentiment dict, or None if no scored reviews exist. Includes
+        the app's official App Store rating (store_avg_rating / store_rating_count)
+        — the all-time average across *every* rating, including silent star-only
+        taps that never appear as written reviews.
     """
     reviews = [
         r for r in database.get_reviews(app_id, country)
@@ -270,4 +273,15 @@ def get_sentiment_summary(app_id: int, country: str | None = None) -> dict | Non
     ]
     if not reviews:
         return None
-    return _build_summary(reviews)
+    summary = _build_summary(reviews)
+
+    # The store's aggregate rating counts all ratings (star-only included), which
+    # the written-review sample above cannot. Prefer the per-country snapshot,
+    # falling back to the app's global metadata.
+    stats = (
+        database.get_app_country_stats(app_id, country) if country else None
+    ) or database.get_app(app_id)
+    store_rating = stats.get("avg_rating") if stats else None
+    summary["store_avg_rating"] = round(store_rating, 2) if store_rating else None
+    summary["store_rating_count"] = stats.get("rating_count") if stats else None
+    return summary

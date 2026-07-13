@@ -69,8 +69,12 @@ function Methodology() {
             </li>
           </ul>
           <p className="text-xs text-neutral-400">
-            “Reviews avg” is the average star rating of the recent reviews collected —
-            a small, recency-skewed sample, not the app’s official all-time rating.
+            “App Store rating” is the app’s official all-time average across{" "}
+            <i>every</i> rating, including silent star-only taps that never appear as
+            written reviews. The sentiment breakdown and “written-review avg” are based
+            only on the recent <i>written</i> reviews Apple exposes (a small,
+            recency-skewed sample). Apple does not publish recent star-only ratings, so
+            the star-inclusive figure is necessarily all-time.
           </p>
         </div>
       )}
@@ -151,9 +155,21 @@ export default function SentimentPage() {
           value={<span className="text-red-600">{sentiment.negative_pct}%</span>}
         />
         <MetricCard
-          label="Reviews avg"
-          value={`${sentiment.avg_rating} ★`}
-          hint="Average of recent collected reviews, not the store's all-time rating"
+          label="App Store rating"
+          value={
+            sentiment.store_avg_rating != null
+              ? `${sentiment.store_avg_rating} ★`
+              : `${sentiment.avg_rating} ★`
+          }
+          hint={
+            sentiment.store_avg_rating != null
+              ? `All ratings incl. star-only${
+                  sentiment.store_rating_count != null
+                    ? ` (${sentiment.store_rating_count.toLocaleString()})`
+                    : ""
+                } · written-review avg ${sentiment.avg_rating}★`
+              : "Average of recent written reviews (store rating unavailable)"
+          }
         />
       </div>
 
