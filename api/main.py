@@ -72,6 +72,7 @@ def _run_collection(
     country: str = config.DEFAULT_COUNTRY,
     force: bool = False,
     user_id: str | None = None,
+    app_id: int | None = None,
 ) -> None:
     """
     Run the full collection pipeline and record its outcome in _jobs.
@@ -84,11 +85,18 @@ def _run_collection(
         force:    Re-discover competitors even if a recent result exists (also
                   forces seed regeneration).
         user_id:  Supabase user the collected app is assigned to (ownership).
+        app_id:   Exact iTunes ID to collect (from autocomplete). When given,
+                  the app is looked up by ID rather than searched by name, so
+                  the picked app is collected exactly instead of the top search hit.
     """
     try:
         database.create_tables()
 
-        app_data = scraper.fetch_app_metadata(app_name, country)
+        # Prefer an exact lookup by the picked ID; fall back to a name search.
+        if app_id is not None:
+            app_data = scraper.fetch_app_by_id(app_id, country)
+        else:
+            app_data = scraper.fetch_app_metadata(app_name, country)
         if not app_data:
             _jobs[job_id] = {
                 "status": "error",
@@ -666,6 +674,7 @@ def collect_app(
     use_llm: bool = False,
     country: str = config.DEFAULT_COUNTRY,
     force: bool = False,
+    app_id: Optional[int] = None,
     user: dict = Depends(get_current_user),
 ) -> dict:
     """
@@ -681,6 +690,9 @@ def collect_app(
         use_llm:  Whether to use LLM during analysis steps (query param).
         country:  App Store country code to collect for (query param).
         force:    Re-discover competitors even if a recent result exists (query param).
+        app_id:   Exact iTunes ID to collect (query param). Sent by the
+                  autocomplete pick so the chosen app is collected exactly,
+                  rather than the top result of a name search.
 
     Returns:
         Dict with job_id and initial status.
@@ -688,7 +700,7 @@ def collect_app(
     job_id = str(uuid.uuid4())
     _jobs[job_id] = {"status": "running", "user_id": user["id"]}
     background_tasks.add_task(
-        _run_collection, job_id, app_name, use_llm, country, force, user["id"]
+        _run_collection, job_id, app_name, use_llm, country, force, user["id"], app_id
     )
     return {"job_id": job_id, "status": "running"}
 

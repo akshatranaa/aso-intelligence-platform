@@ -42,6 +42,9 @@ export default function HomePage() {
   // ── App-name autocomplete ──────────────────────────────────────────────
   const [suggestions, setSuggestions] = useState<AppSearchResult[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
+  // The exact app picked from autocomplete — collect this ID rather than
+  // re-searching the name (whose top hit can be a different app).
+  const [selectedAppId, setSelectedAppId] = useState<number | null>(null);
   const skipSearch = useRef(false); // don't re-search right after picking
 
   useEffect(() => {
@@ -73,6 +76,7 @@ export default function HomePage() {
   function pickSuggestion(s: AppSearchResult) {
     skipSearch.current = true;
     setName(s.name);
+    setSelectedAppId(s.app_id);
     setShowSuggestions(false);
   }
 
@@ -87,7 +91,7 @@ export default function HomePage() {
     try {
       const start = await apiPost<CollectStart>(
         `/collect/${encodeURIComponent(name.trim())}`,
-        { use_llm: useLlm, country, force }
+        { use_llm: useLlm, country, force, app_id: selectedAppId ?? undefined }
       );
       setJobId(start.job_id);
       const t = setInterval(() => setElapsed((e) => e + 1), 1000);
@@ -169,7 +173,10 @@ export default function HomePage() {
               <Input
                 placeholder="Start typing — e.g. Spotify"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  setSelectedAppId(null); // typing again = search by name, not the old pick
+                }}
                 onFocus={() => suggestions.length && setShowSuggestions(true)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !running) {
