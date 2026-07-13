@@ -1,7 +1,7 @@
 # iTunes API endpoints
 ITUNES_SEARCH_URL  = "https://itunes.apple.com/search"
 ITUNES_LOOKUP_URL  = "https://itunes.apple.com/lookup"
-ITUNES_REVIEWS_URL      = "https://itunes.apple.com/{country}/rss/customerreviews/id={app_id}/sortBy=mostRecent/json"
+ITUNES_REVIEWS_URL      = "https://itunes.apple.com/{country}/rss/customerreviews/id={app_id}/sortBy=mostRecent/page=1/json"
 ITUNES_AUTOCOMPLETE_URL = "https://search.itunes.apple.com/WebObjects/MZSearchHints.woa/wa/hints"
 
 # Defaults
