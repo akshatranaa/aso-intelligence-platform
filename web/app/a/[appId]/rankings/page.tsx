@@ -12,6 +12,7 @@ import { countryLabel } from "@/lib/countries";
 import {
   Button,
   Card,
+  ConfirmDialog,
   DeltaCell,
   EmptyState,
   Input,
@@ -29,6 +30,7 @@ export default function RankingsPage() {
   const rankings = useMemo(() => data?.rankings ?? [], [data?.rankings]);
 
   const [newKw, setNewKw] = useState("");
+  const [confirmKeyword, setConfirmKeyword] = useState<string | null>(null);
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["rankings", appId, country] });
@@ -50,7 +52,10 @@ export default function RankingsPage() {
   const remove = useMutation({
     mutationFn: (keyword: string) =>
       apiDelete(`/app/${appId}/rankings/keyword`, { keyword, country }),
-    onSuccess: invalidate,
+    onSuccess: () => {
+      setConfirmKeyword(null);
+      invalidate();
+    },
   });
 
   const sorted = useMemo(
@@ -153,7 +158,7 @@ export default function RankingsPage() {
               </thead>
               <tbody className="divide-y divide-neutral-100">
                 {sorted.map((r) => (
-                  <tr key={r.keyword} className="group">
+                  <tr key={r.keyword}>
                     <td className="py-2.5 pr-3 font-medium text-neutral-800">
                       {r.keyword}
                     </td>
@@ -174,14 +179,13 @@ export default function RankingsPage() {
                       <TrendBadge trend={r.trend} />
                     </td>
                     <td className="py-2.5 text-right">
-                      <button
-                        onClick={() => remove.mutate(r.keyword)}
-                        disabled={remove.isPending}
-                        title="Stop tracking this keyword"
-                        className="rounded p-1.5 text-neutral-300 opacity-0 transition hover:bg-red-50 hover:text-red-500 group-hover:opacity-100"
+                      <Button
+                        variant="outline"
+                        onClick={() => setConfirmKeyword(r.keyword)}
+                        className="border-red-200 px-2.5 py-1 text-xs text-red-600 hover:border-red-300 hover:bg-red-50"
                       >
-                        <Trash2 className="size-4" />
-                      </button>
+                        <Trash2 className="size-3.5" /> Delete
+                      </Button>
                     </td>
                   </tr>
                 ))}
@@ -190,6 +194,16 @@ export default function RankingsPage() {
           </Card>
         </>
       )}
+
+      <ConfirmDialog
+        open={confirmKeyword != null}
+        title={`Delete "${confirmKeyword}"?`}
+        description="This permanently stops tracking this keyword and deletes its full ranking history for this app. This can't be undone."
+        confirmLabel="Delete"
+        busy={remove.isPending}
+        onCancel={() => setConfirmKeyword(null)}
+        onConfirm={() => confirmKeyword && remove.mutate(confirmKeyword)}
+      />
     </div>
   );
 }

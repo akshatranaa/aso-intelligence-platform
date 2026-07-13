@@ -34,6 +34,7 @@ import type { Competitor } from "@/lib/types";
 import {
   Button,
   Card,
+  ConfirmDialog,
   EmptyState,
   Input,
   MetricCard,
@@ -374,11 +375,11 @@ function Methodology() {
 
 function CompetitorTable({
   apps,
-  onRemove,
+  onRequestRemove,
   removingId,
 }: {
   apps: Competitor[];
-  onRemove: (id: number) => void;
+  onRequestRemove: (c: Competitor) => void;
   removingId: number | null;
 }) {
   if (!apps.length) return <EmptyState>No competitors in this tier.</EmptyState>;
@@ -396,7 +397,7 @@ function CompetitorTable({
       </thead>
       <tbody className="divide-y divide-neutral-100">
         {apps.map((c) => (
-          <tr key={c.app_id} className="group">
+          <tr key={c.app_id}>
             <td className="max-w-xs truncate py-2.5 pr-3 font-medium text-neutral-800">
               {c.name}
             </td>
@@ -411,18 +412,19 @@ function CompetitorTable({
             </td>
             <td className="py-2.5 pr-3 text-neutral-500">{c.category ?? "—"}</td>
             <td className="py-2.5 text-right">
-              <button
-                onClick={() => onRemove(c.app_id)}
+              <Button
+                variant="outline"
+                onClick={() => onRequestRemove(c)}
                 disabled={removingId === c.app_id}
-                title="Remove this competitor (deletes it from the database)"
-                className="rounded p-1.5 text-neutral-300 opacity-0 transition hover:bg-red-50 hover:text-red-500 group-hover:opacity-100"
+                className="border-red-200 px-2.5 py-1 text-xs text-red-600 hover:border-red-300 hover:bg-red-50"
               >
                 {removingId === c.app_id ? (
-                  <Loader2 className="size-4 animate-spin" />
+                  <Loader2 className="size-3.5 animate-spin" />
                 ) : (
-                  <Trash2 className="size-4" />
+                  <Trash2 className="size-3.5" />
                 )}
-              </button>
+                Delete
+              </Button>
             </td>
           </tr>
         ))}
@@ -437,12 +439,20 @@ export default function CompetitorsPage() {
   const { data, isLoading } = useCompetitors(appId, country);
   const { data: app } = useApp(appId, country);
   const [tab, setTab] = useState<"tier1" | "tier2">("tier1");
+  // The competitor pending a delete confirmation — shared by the tier table's
+  // Delete button and the chart's click-to-remove, so there's one dialog.
+  const [pendingRemove, setPendingRemove] = useState<{
+    id: number;
+    name: string;
+  } | null>(null);
 
   const removeCompetitor = useMutation({
     mutationFn: (compId: number) =>
       apiDelete(`/app/${appId}/competitors/${compId}`, { country }),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ["competitors", appId, country] }),
+    onSuccess: () => {
+      setPendingRemove(null);
+      queryClient.invalidateQueries({ queryKey: ["competitors", appId, country] });
+    },
   });
 
   const tier1 = useMemo(() => data?.tier1 ?? [], [data?.tier1]);
@@ -464,19 +474,11 @@ export default function CompetitorsPage() {
     [all]
   );
 
-  // Click a bar to permanently remove that competitor (same endpoint as the
-  // tier-table trash button). Confirm first — a stray click deletes for real.
+  // Click a bar to request removing that competitor (same dialog + endpoint
+  // as the tier-table Delete button).
   const removeFromChart = (datum: { app_id?: number; fullName?: string }) => {
-    const id = datum?.app_id;
-    if (id == null || removeCompetitor.isPending) return;
-    if (
-      window.confirm(
-        `Remove "${datum.fullName ?? "this competitor"}" from your top performers?\n\n` +
-          "This deletes it permanently from the database for this country."
-      )
-    ) {
-      removeCompetitor.mutate(id);
-    }
+    if (datum?.app_id == null || removeCompetitor.isPending) return;
+    setPendingRemove({ id: datum.app_id, name: datum.fullName ?? "this competitor" });
   };
 
   const scatterData = useMemo(
@@ -587,7 +589,7 @@ export default function CompetitorsPage() {
             </div>
             <CompetitorTable
               apps={tab === "tier1" ? tier1 : tier2}
-              onRemove={(id) => removeCompetitor.mutate(id)}
+              onRequestRemove={(c) => setPendingRemove({ id: c.app_id, name: c.name })}
               removingId={removeCompetitor.isPending ? removeCompetitor.variables : null}
             />
           </Card>
@@ -664,6 +666,16 @@ export default function CompetitorsPage() {
 
         </>
       )}
+
+      <ConfirmDialog
+        open={pendingRemove != null}
+        title={`Delete "${pendingRemove?.name}"?`}
+        description="This permanently removes it from your top performers for this country. This can't be undone."
+        confirmLabel="Delete"
+        busy={removeCompetitor.isPending}
+        onCancel={() => setPendingRemove(null)}
+        onConfirm={() => pendingRemove && removeCompetitor.mutate(pendingRemove.id)}
+      />
     </div>
   );
 }

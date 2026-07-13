@@ -2,6 +2,8 @@
 
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { Loader2 } from "lucide-react";
+import { useEffect } from "react";
 import type {
   ButtonHTMLAttributes,
   InputHTMLAttributes,
@@ -223,6 +225,77 @@ export function TrendBadge({ trend }: { trend: string }) {
   };
   const t = map[trend as keyof typeof map] ?? map.unknown;
   return <Badge color={t.color}>{t.label}</Badge>;
+}
+
+/* ── Confirm dialog ────────────────────────────────────────────────────── */
+
+/**
+ * A proper "are you sure?" modal — used before any permanent delete instead
+ * of the browser's native confirm() popup. Esc or backdrop click cancels.
+ */
+export function ConfirmDialog({
+  open,
+  title,
+  description,
+  confirmLabel = "Delete",
+  cancelLabel = "Cancel",
+  busy = false,
+  onConfirm,
+  onCancel,
+}: {
+  open: boolean;
+  title: string;
+  description?: ReactNode;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  busy?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, onCancel]);
+
+  if (!open) return null;
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onClick={onCancel}
+    >
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="confirm-dialog-title"
+        className="w-full max-w-sm rounded-xl bg-white p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 id="confirm-dialog-title" className="text-base font-semibold text-neutral-900">
+          {title}
+        </h3>
+        {description && (
+          <p className="mt-2 text-sm text-neutral-600">{description}</p>
+        )}
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="outline" onClick={onCancel} disabled={busy}>
+            {cancelLabel}
+          </Button>
+          <Button
+            onClick={onConfirm}
+            disabled={busy}
+            className="bg-red-600 hover:bg-red-700 active:bg-red-800"
+          >
+            {busy && <Loader2 className="size-4 animate-spin" />}
+            {confirmLabel}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export function DeltaCell({ delta }: { delta: number | null }) {
