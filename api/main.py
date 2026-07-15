@@ -127,9 +127,6 @@ def _run_collection(
         app_data["is_target_app"] = 1
         database.save_app(app_data)
         app_id = app_data["app_id"]
-        # Assign the app to the collecting user so it shows in their list.
-        if user_id:
-            database.add_user_app(user_id, app_id)
         logger.info(f"Collecting data for {app_data['name']} ({app_id}) [{country}]")
 
         # Fast path: if this app+country was already collected recently (competitors
@@ -198,9 +195,12 @@ def _run_collection(
             if reviews_fetch_failed else None
         )
 
-        # Grant country-scoped ownership only on success, so a failed/partial
-        # run doesn't make this country look available in the user's list.
+        # Grant ownership only now, on success — not when the job starts — so
+        # the app doesn't appear anywhere (app switcher, Load a saved app) until
+        # the whole pipeline has actually finished. A failed/partial run grants
+        # nothing, so it never shows as available.
         if user_id:
+            database.add_user_app(user_id, app_id)
             database.add_user_app_country(user_id, app_id, country)
 
         logger.info(f"Collection complete for {app_data['name']}")
