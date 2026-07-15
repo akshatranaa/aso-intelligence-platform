@@ -33,7 +33,6 @@ export default function HomePage() {
 
   const [country, setCountry] = useState("in");
   const [name, setName] = useState("");
-  const [useLlm, setUseLlm] = useState(true);
   const [force, setForce] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
@@ -111,7 +110,7 @@ export default function HomePage() {
       const start = await apiPost<CollectStart>(
         `/collect/${encodeURIComponent(effectiveName.trim())}`,
         {
-          use_llm: useLlm,
+          use_llm: true,
           country: effectiveCollectCountry,
           force,
           app_id: effectiveAppId ?? undefined,
@@ -286,12 +285,6 @@ export default function HomePage() {
               )}
             </div>
 
-            <CheckboxRow
-              label="Use AI during analysis"
-              help="Smarter seeds, competitor judging, and review analysis (uses API credits)."
-              checked={useLlm}
-              onChange={setUseLlm}
-            />
             <CheckboxRow
               label="Re-discover competitors"
               help="Ignore the 7-day cache and re-run competitor discovery from scratch."
