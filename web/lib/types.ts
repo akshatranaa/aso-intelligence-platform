@@ -155,6 +155,7 @@ export interface CollectJob {
     reviews_saved: number;
     keywords_tracked: number;
     seed_warning: string | null;
+    reviews_warning: string | null;
     collected_at: string;
   };
 }

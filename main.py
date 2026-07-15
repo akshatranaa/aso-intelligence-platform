@@ -59,7 +59,9 @@ def main() -> None:
         logger.info(f"Keyword '{keyword}': rank {rank}")
 
     # Step 8 — fetch and save reviews
-    reviews = scraper.fetch_reviews(target_app_id)
+    reviews, reviews_fetch_failed = scraper.fetch_reviews(target_app_id)
+    if reviews_fetch_failed:
+        logger.warning("Review fetch failed after retries — 0 reviews saved this run")
     collected_at = datetime.now().isoformat()
     for review in reviews:
         review["collected_at"] = collected_at

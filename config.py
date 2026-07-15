@@ -12,6 +12,10 @@ RANKING_SEARCH_LIMIT   = 200
 # Rate limiting
 RATE_LIMIT_SECONDS = 1
 
+# Apple's reviews RSS occasionally fails a single request transiently — retry
+# before giving up, so a hiccup doesn't look identical to "no reviews exist".
+REVIEWS_FETCH_ATTEMPTS = 2
+
 # Database — connection string comes from the DATABASE_URL environment variable
 # (see database.py). Postgres-hosted (e.g. Neon), not a local file.
 

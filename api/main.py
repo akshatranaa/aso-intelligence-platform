@@ -166,7 +166,7 @@ def _run_collection(
         )
 
         _set_progress(job_id, "Fetching recent reviews…", 3)
-        reviews = scraper.fetch_reviews(app_id, country)
+        reviews, reviews_fetch_failed = scraper.fetch_reviews(app_id, country)
         collected_at = datetime.now().isoformat()
         for review in reviews:
             review["app_id"]       = app_id
@@ -191,6 +191,12 @@ def _run_collection(
             "category seeds instead, so competitor results may be less relevant."
             if (use_llm and not used_llm_seeds) else None
         )
+        reviews_warning = (
+            "Fetching reviews from Apple failed after retrying — 0 reviews were "
+            "saved this run, so sentiment has nothing to show. This is usually "
+            "transient; try collecting again in a few minutes."
+            if reviews_fetch_failed else None
+        )
 
         logger.info(f"Collection complete for {app_data['name']}")
         _jobs[job_id] = {
@@ -203,6 +209,7 @@ def _run_collection(
                 "keywords_tracked": len(tracked),
                 "sentiment":        sentiment_summary,
                 "seed_warning":     seed_warning,
+                "reviews_warning":  reviews_warning,
                 "collected_at":     collected_at,
             },
         }

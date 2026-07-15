@@ -306,6 +306,11 @@ export default function HomePage() {
                     ⚠️ {done.seed_warning}
                   </p>
                 )}
+                {done.reviews_warning && (
+                  <p className="mt-2 rounded bg-red-50 p-2 text-xs text-red-700">
+                    ⚠️ {done.reviews_warning}
+                  </p>
+                )}
                 <Button
                   className="mt-3"
                   onClick={() =>

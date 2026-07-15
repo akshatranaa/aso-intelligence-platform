@@ -176,46 +176,69 @@ def fetch_app_by_id(app_id: int, country: str = config.DEFAULT_COUNTRY) -> dict 
         _rate_limit()
 
 
-def fetch_reviews(app_id: int, country: str = config.DEFAULT_COUNTRY) -> list[dict]:
+def fetch_reviews(
+    app_id: int, country: str = config.DEFAULT_COUNTRY
+) -> tuple[list[dict], bool]:
     """
     Fetch the most recent reviews for an app from the iTunes RSS feed.
+
+    Retries up to config.REVIEWS_FETCH_ATTEMPTS times on failure — Apple's
+    feed occasionally errors on a single request, or returns a "successful"
+    but suspiciously empty body (soft throttling: 200 OK, zero entries — not
+    even the one entry that always describes the app itself). A genuinely
+    review-less app still returns that one description entry, so a completely
+    empty body is treated as a failed attempt rather than "no reviews".
 
     Args:
         app_id:  iTunes numeric app ID.
         country: Two-letter App Store country code.
 
     Returns:
-        List of dicts with keys: review_text, rating, review_date, author.
-        Returns an empty list if the request fails or there are no reviews.
+        (reviews, fetch_failed). reviews is a list of dicts with keys:
+        review_text, rating, review_date, author — empty if the app has none,
+        or if every attempt failed. fetch_failed is True only when every
+        attempt errored or came back empty, so the caller can tell "no
+        reviews" apart from "the fetch didn't work" instead of both looking
+        like an empty list.
     """
     url = config.ITUNES_REVIEWS_URL.format(country=country, app_id=app_id)
-    try:
-        response = client.get(url)
-        response.raise_for_status()
-        data = response.json()
-        entries = data.get("feed", {}).get("entry", [])
-        # First entry describes the app itself — skip it
-        review_entries = entries[1:] if len(entries) > 1 else []
-        reviews = []
-        for entry in review_entries:
-            reviews.append({
-                "review_text":  entry.get("content", {}).get("label"),
-                "rating":       int(entry.get("im:rating", {}).get("label", 0)),
-                "review_date":  entry.get("updated", {}).get("label"),
-                "author":       entry.get("author", {}).get("name", {}).get("label"),
-            })
-        return reviews
-    except httpx.TimeoutException:
-        logger.error(f"Timeout fetching: {url}")
-        return []
-    except httpx.HTTPStatusError as e:
-        logger.error(f"HTTP {e.response.status_code} for: {url}")
-        return []
-    except Exception as e:
-        logger.error(f"Unexpected error fetching {url}: {e}")
-        return []
-    finally:
-        _rate_limit()
+    for attempt in range(1, config.REVIEWS_FETCH_ATTEMPTS + 1):
+        try:
+            response = client.get(url)
+            response.raise_for_status()
+            data = response.json()
+            entries = data.get("feed", {}).get("entry", [])
+            if not entries:
+                # Zero entries (not even the app-description one) looks like
+                # soft throttling, not a genuine "no reviews" state — retry it.
+                logger.error(
+                    f"Empty feed body (attempt {attempt}), likely throttled: {url}"
+                )
+                continue
+            # First entry describes the app itself — skip it
+            review_entries = entries[1:] if len(entries) > 1 else []
+            reviews = []
+            for entry in review_entries:
+                reviews.append({
+                    "review_text":  entry.get("content", {}).get("label"),
+                    "rating":       int(entry.get("im:rating", {}).get("label", 0)),
+                    "review_date":  entry.get("updated", {}).get("label"),
+                    "author":       entry.get("author", {}).get("name", {}).get("label"),
+                })
+            return reviews, False
+        except httpx.TimeoutException:
+            logger.error(f"Timeout fetching (attempt {attempt}): {url}")
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTP {e.response.status_code} (attempt {attempt}): {url}")
+        except Exception as e:
+            logger.error(f"Unexpected error (attempt {attempt}) fetching {url}: {e}")
+        finally:
+            _rate_limit()
+    logger.error(
+        f"Giving up on reviews for app {app_id} [{country}] after "
+        f"{config.REVIEWS_FETCH_ATTEMPTS} attempts"
+    )
+    return [], True
 
 
 def fetch_keyword_ranking(
