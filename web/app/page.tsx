@@ -112,7 +112,9 @@ export default function HomePage() {
         {
           use_llm: true,
           country: effectiveCollectCountry,
-          force,
+          // Only meaningful (and only shown) when this app+country was
+          // already collected — otherwise there's nothing to bypass.
+          force: force && collectAppAlreadyCollected,
           app_id: effectiveAppId ?? undefined,
         }
       );
@@ -167,6 +169,19 @@ export default function HomePage() {
   // Selected saved app + its countries, derived (falls back to the first app so
   // the form is always populated once apps load).
   const apps = appsData?.apps ?? [];
+
+  // "Re-discover competitors" only means something if this exact app+country
+  // was already collected — otherwise there's nothing cached to bypass, and
+  // the checkbox would be a no-op. Only known when a suggestion was actually
+  // picked (selectedAppId), since a freeform name isn't a confirmed app_id yet.
+  const collectAppAlreadyCollected =
+    selectedAppId != null &&
+    apps.some(
+      (a) =>
+        a.app_id === selectedAppId &&
+        a.countries.some((c) => c.country === country)
+    );
+
   const selectedApp = apps.find((a) => a.app_id === loadAppId) ?? apps[0];
   const loadCountries = selectedApp?.countries ?? [];
   const loadCountryCodes = loadCountries.map((c) => c.country);
@@ -285,12 +300,14 @@ export default function HomePage() {
               )}
             </div>
 
-            <CheckboxRow
-              label="Re-discover competitors"
-              help="Ignore the 7-day cache and re-run competitor discovery from scratch."
-              checked={force}
-              onChange={setForce}
-            />
+            {collectAppAlreadyCollected && (
+              <CheckboxRow
+                label="Re-discover competitors"
+                help="Ignore the 7-day cache and re-run competitor discovery from scratch."
+                checked={force}
+                onChange={setForce}
+              />
+            )}
             <Button
               onClick={() => startCollect()}
               disabled={running || !name.trim()}
@@ -456,7 +473,8 @@ export default function HomePage() {
                 </Button>
               </div>
 
-              <button
+              <Button
+                variant="outline"
                 onClick={() =>
                   selectedApp &&
                   setConfirmDeleteApp({
@@ -465,10 +483,10 @@ export default function HomePage() {
                   })
                 }
                 disabled={!selectedApp || untrack.isPending}
-                className="flex w-full items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs text-neutral-400 hover:text-red-500"
+                className="w-full border-red-200 text-red-600 hover:border-red-300 hover:bg-red-50"
               >
-                <X className="size-3.5" /> Delete this app
-              </button>
+                <X className="size-4" /> Delete this app
+              </Button>
             </div>
           )}
         </Card>
