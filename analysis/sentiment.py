@@ -253,22 +253,29 @@ def _build_summary(reviews: list[dict]) -> dict:
     }
 
 
-def get_sentiment_summary(app_id: int, country: str | None = None) -> dict | None:
+def get_sentiment_summary(
+    app_id: int, country: str | None = None, days: int | None = 30
+) -> dict | None:
     """
     Read already-computed sentiment results from database without recomputing.
 
     Args:
         app_id:  iTunes app ID.
         country: If given, only reviews collected for that App Store country.
+        days:    Only reviews dated within the last N days (default 30 —
+                 recent sentiment is far more actionable than an all-time
+                 blend). Pass None for all-time.
 
     Returns:
-        Aggregate sentiment dict, or None if no scored reviews exist. Includes
-        the app's official App Store rating (store_avg_rating / store_rating_count)
-        — the all-time average across *every* rating, including silent star-only
-        taps that never appear as written reviews.
+        Aggregate sentiment dict, or None if no scored reviews exist in the
+        window. Includes the app's official App Store rating (store_avg_rating
+        / store_rating_count) — the all-time average across *every* rating,
+        including silent star-only taps that never appear as written reviews
+        (this one figure is always all-time, regardless of `days`, since
+        Apple doesn't expose a recent-only version of it).
     """
     reviews = [
-        r for r in database.get_reviews(app_id, country)
+        r for r in database.get_reviews(app_id, country, days=days)
         if r["sentiment_label"] is not None
     ]
     if not reviews:

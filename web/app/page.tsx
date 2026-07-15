@@ -5,10 +5,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, Loader2, Search, X } from "lucide-react";
+import { ChevronRight, Loader2, RotateCcw, Search, X } from "lucide-react";
 import { apiGet, apiPost } from "@/lib/api";
 import { useApps, useCollectJob } from "@/lib/hooks";
 import { COUNTRIES, countryLabel } from "@/lib/countries";
+import { fmtDate, fmtRelativeDate } from "@/lib/format";
 import { requestNotifyPermission, useJobTabNotifier } from "@/lib/use-job-tab-notifier";
 import type { AppSearchResult, CollectStart } from "@/lib/types";
 import {
@@ -16,6 +17,7 @@ import {
   Card,
   CheckboxRow,
   cn,
+  ConfirmDialog,
   EmptyState,
   Input,
   PageTitle,
@@ -89,16 +91,31 @@ export default function HomePage() {
   // notification if the user switches away while it's running).
   useJobTabNotifier(jobId ? job?.status : undefined, `Collected ${name.trim()}`);
 
-  async function startCollect() {
-    if (!name.trim()) return;
+  // Accepts overrides so "Re-collect" can fire immediately without waiting on
+  // a state update to land (setName/setCountry are async — reading the state
+  // variables right after setting them would use stale values).
+  async function startCollect(overrides?: {
+    name?: string;
+    country?: string;
+    appId?: number;
+  }) {
+    const effectiveName = overrides?.name ?? name;
+    const effectiveCollectCountry = overrides?.country ?? country;
+    const effectiveAppId = overrides?.appId ?? selectedAppId;
+    if (!effectiveName.trim()) return;
     setShowSuggestions(false);
     setStartError(null);
     setElapsed(0);
     requestNotifyPermission(); // ask now, while we have a user gesture
     try {
       const start = await apiPost<CollectStart>(
-        `/collect/${encodeURIComponent(name.trim())}`,
-        { use_llm: useLlm, country, force, app_id: selectedAppId ?? undefined }
+        `/collect/${encodeURIComponent(effectiveName.trim())}`,
+        {
+          use_llm: useLlm,
+          country: effectiveCollectCountry,
+          force,
+          app_id: effectiveAppId ?? undefined,
+        }
       );
       setJobId(start.job_id);
       const t = setInterval(() => setElapsed((e) => e + 1), 1000);
@@ -118,9 +135,31 @@ export default function HomePage() {
     }
   }
 
+  const [confirmDeleteApp, setConfirmDeleteApp] = useState<{
+    app_id: number;
+    name: string;
+  } | null>(null);
+  const [deletedMessage, setDeletedMessage] = useState<string | null>(null);
+
   const untrack = useMutation({
-    mutationFn: (appId: number) => apiPost(`/app/${appId}/untrack`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["apps"] }),
+    mutationFn: (appId: number) =>
+      apiPost<{
+        app_id: number;
+        countries_removed: string[];
+        countries_purged: string[];
+        app_fully_deleted: boolean;
+      }>(`/app/${appId}/untrack`),
+    onSuccess: (result, appId) => {
+      queryClient.invalidateQueries({ queryKey: ["apps"] });
+      const deletedApp =
+        appsData?.apps.find((a) => a.app_id === appId)?.name ?? "App";
+      setDeletedMessage(
+        `${deletedApp} deleted — permanently removed for ` +
+          `${result.countries_removed.map(countryLabel).join(", ")}.`
+      );
+      setLoadAppId(null);
+      setConfirmDeleteApp(null);
+    },
   });
 
   const done = job?.status === "done" ? job.result : null;
@@ -131,9 +170,13 @@ export default function HomePage() {
   const apps = appsData?.apps ?? [];
   const selectedApp = apps.find((a) => a.app_id === loadAppId) ?? apps[0];
   const loadCountries = selectedApp?.countries ?? [];
-  const effectiveCountry = loadCountries.includes(loadCountry)
+  const loadCountryCodes = loadCountries.map((c) => c.country);
+  const effectiveCountry = loadCountryCodes.includes(loadCountry)
     ? loadCountry
-    : (loadCountries[0] ?? "");
+    : (loadCountryCodes[0] ?? "");
+  const effectiveCountryInfo = loadCountries.find(
+    (c) => c.country === effectiveCountry
+  );
 
   function loadApp() {
     if (!selectedApp) return;
@@ -142,6 +185,21 @@ export default function HomePage() {
         effectiveCountry ? `?country=${effectiveCountry}` : ""
       }`
     );
+  }
+
+  // Pre-fills and fires the Collect form for the app+country picked in "Load
+  // a saved app", so re-collecting doesn't require retyping the name.
+  function reCollectSaved() {
+    if (!selectedApp || !effectiveCountry) return;
+    setName(selectedApp.name);
+    setCountry(effectiveCountry);
+    setSelectedAppId(selectedApp.app_id);
+    setDeletedMessage(null);
+    startCollect({
+      name: selectedApp.name,
+      country: effectiveCountry,
+      appId: selectedApp.app_id,
+    });
   }
 
   return (
@@ -241,7 +299,7 @@ export default function HomePage() {
               onChange={setForce}
             />
             <Button
-              onClick={startCollect}
+              onClick={() => startCollect()}
               disabled={running || !name.trim()}
               className="w-full"
             >
@@ -327,6 +385,11 @@ export default function HomePage() {
         {/* ── Load a saved app ────────────────────────────────────────── */}
         <Card className="lg:col-span-2">
           <SectionTitle>📂 Load a saved app</SectionTitle>
+          {deletedMessage && (
+            <p className="mb-3 rounded-lg border border-green-200 bg-green-50 p-2.5 text-xs text-green-700">
+              ✅ {deletedMessage}
+            </p>
+          )}
           {appsLoading ? (
             <div className="flex justify-center py-8">
               <Spinner className="size-6" />
@@ -361,46 +424,78 @@ export default function HomePage() {
                 <Select
                   value={effectiveCountry}
                   onChange={(e) => setLoadCountry(e.target.value)}
-                  disabled={loadCountries.length === 0}
+                  disabled={loadCountryCodes.length === 0}
                 >
                   {loadCountries.map((c) => (
-                    <option key={c} value={c}>
-                      {countryLabel(c)}
+                    <option key={c.country} value={c.country}>
+                      {countryLabel(c.country)}
                     </option>
                   ))}
                 </Select>
                 <p className="mt-1 text-xs text-neutral-400">
-                  Only the countries this app has been collected for.
+                  Only the countries you&apos;ve collected this app for.
+                  {effectiveCountryInfo && (
+                    <>
+                      {" "}Last collected{" "}
+                      <span
+                        className="font-medium text-neutral-500"
+                        title={fmtDate(effectiveCountryInfo.collected_at)}
+                      >
+                        {fmtRelativeDate(effectiveCountryInfo.collected_at)}
+                      </span>
+                      .
+                    </>
+                  )}
                 </p>
               </div>
 
-              <Button onClick={loadApp} disabled={!selectedApp} className="w-full">
-                Load analysis <ChevronRight className="size-4" />
-              </Button>
+              <div className="flex gap-2">
+                <Button onClick={loadApp} disabled={!selectedApp} className="flex-1">
+                  Load analysis <ChevronRight className="size-4" />
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={reCollectSaved}
+                  disabled={!selectedApp || running}
+                  title="Re-collect this app + country now"
+                >
+                  <RotateCcw className="size-4" /> Re-collect
+                </Button>
+              </div>
 
               <button
-                onClick={() => {
-                  if (!selectedApp) return;
-                  if (
-                    window.confirm(
-                      `Are you sure you want to remove "${selectedApp.name}"?\n\n` +
-                        "It will disappear from your saved apps. Its collected " +
-                        "data is kept — re-collect it any time to bring it back."
-                    )
-                  ) {
-                    untrack.mutate(selectedApp.app_id);
-                    setLoadAppId(null);
-                  }
-                }}
+                onClick={() =>
+                  selectedApp &&
+                  setConfirmDeleteApp({
+                    app_id: selectedApp.app_id,
+                    name: selectedApp.name,
+                  })
+                }
                 disabled={!selectedApp || untrack.isPending}
                 className="flex w-full items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs text-neutral-400 hover:text-red-500"
               >
-                <X className="size-3.5" /> Remove this app from the list
+                <X className="size-3.5" /> Delete this app
               </button>
             </div>
           )}
         </Card>
       </div>
+
+      <ConfirmDialog
+        open={confirmDeleteApp != null}
+        title={`Delete "${confirmDeleteApp?.name}"?`}
+        description={
+          `This permanently deletes your collected data for this app — every ` +
+          `country you've collected it for. This can't be undone. (Other ` +
+          `users who have also collected this app keep their own data.)`
+        }
+        confirmLabel="Delete"
+        busy={untrack.isPending}
+        onCancel={() => setConfirmDeleteApp(null)}
+        onConfirm={() =>
+          confirmDeleteApp && untrack.mutate(confirmDeleteApp.app_id)
+        }
+      />
     </div>
   );
 }

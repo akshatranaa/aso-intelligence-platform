@@ -16,6 +16,7 @@ import {
 } from "recharts";
 import { usePageContext } from "@/lib/context";
 import { useReviews, useSentiment } from "@/lib/hooks";
+import { fmtDate } from "@/lib/format";
 import {
   Badge,
   Card,
@@ -33,13 +34,13 @@ const SENTIMENT_COLORS = {
   Neutral: "#f59e0b",
 };
 
-function fmtDate(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return isNaN(d.getTime())
-    ? "—"
-    : d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
-}
+// null = all time.
+const PERIODS: { label: string; days: number | null }[] = [
+  { label: "Last 30 days", days: 30 },
+  { label: "Last 60 days", days: 60 },
+  { label: "Last 90 days", days: 90 },
+  { label: "All time", days: null },
+];
 
 function Methodology() {
   const [open, setOpen] = useState(false);
@@ -82,11 +83,38 @@ function Methodology() {
   );
 }
 
+function PeriodSelect({
+  days,
+  onChange,
+}: {
+  days: number | null;
+  onChange: (days: number | null) => void;
+}) {
+  return (
+    <Select
+      className="w-40"
+      value={days ?? "all"}
+      onChange={(e) => {
+        const v = e.target.value;
+        onChange(v === "all" ? null : Number(v));
+      }}
+    >
+      {PERIODS.map((p) => (
+        <option key={p.label} value={p.days ?? "all"}>
+          {p.label}
+        </option>
+      ))}
+    </Select>
+  );
+}
+
 export default function SentimentPage() {
   const { appId, country } = usePageContext();
-  const { data: sentiment, isLoading, isError } = useSentiment(appId, country);
-  const { data: reviewsData } = useReviews(appId, country);
+  const [days, setDays] = useState<number | null>(30);
+  const { data: sentiment, isLoading, isError } = useSentiment(appId, country, days);
+  const { data: reviewsData } = useReviews(appId, country, days);
   const [filter, setFilter] = useState("all");
+  const periodLabel = PERIODS.find((p) => p.days === days)?.label ?? "Last 30 days";
 
   // Newest reviews first (iTunes review_date is an ISO string, sorts lexically).
   const reviews = useMemo(() => {
@@ -125,9 +153,12 @@ export default function SentimentPage() {
   if (isError || !sentiment) {
     return (
       <div className="mx-auto max-w-6xl">
-        <PageTitle title="Sentiment Analysis" />
+        <PageTitle title="Sentiment Analysis">
+          <PeriodSelect days={days} onChange={setDays} />
+        </PageTitle>
         <EmptyState>
-          No sentiment data for this country yet — collect the app for it first.
+          No sentiment data for the {periodLabel.toLowerCase()} — collect the app
+          for it first, or try a longer time range above.
         </EmptyState>
       </div>
     );
@@ -141,11 +172,16 @@ export default function SentimentPage() {
 
   return (
     <div className="mx-auto max-w-6xl">
-      <PageTitle title="💬 Sentiment Analysis" />
+      <PageTitle title="💬 Sentiment Analysis">
+        <PeriodSelect days={days} onChange={setDays} />
+      </PageTitle>
       <Methodology />
 
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-        <MetricCard label="Recent reviews" value={sentiment.total_reviews} />
+        <MetricCard
+          label={`Reviews (${periodLabel.toLowerCase()})`}
+          value={sentiment.total_reviews}
+        />
         <MetricCard
           label="Positive"
           value={<span className="text-green-600">{sentiment.positive_pct}%</span>}

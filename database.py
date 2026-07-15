@@ -4,7 +4,7 @@ import json
 import logging
 import os
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import psycopg2
 import psycopg2.extras
@@ -310,6 +310,37 @@ def migrate() -> None:
                 FOREIGN KEY (app_id) REFERENCES apps(app_id)
             )
         """)
+
+        # 8. Per-user, per-country ownership. Reviews/rankings/competitors stay
+        #    shared per (app, country) — re-collecting an app another user
+        #    already fetched reuses that data rather than duplicating it — but
+        #    *visibility* (which countries show as available for an app, in
+        #    /app/{id}/countries and the Load-a-saved-app picker) is scoped to
+        #    this table, not to who else has collected it. Without this, any
+        #    user who collected an app for one country could see and load every
+        #    country anyone had ever collected it for.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS user_app_countries (
+                user_id       UUID NOT NULL,
+                app_id        BIGINT NOT NULL,
+                country       TEXT NOT NULL,
+                collected_at  TEXT NOT NULL,
+                PRIMARY KEY (user_id, app_id, country),
+                FOREIGN KEY (app_id) REFERENCES apps(app_id)
+            )
+        """)
+        # Backfill: best-effort only (there's no history of who collected which
+        # country before this table existed) — credit every existing owner of
+        # an app with every country currently on record for it, so no one loses
+        # access to something they could already see.
+        cur.execute("""
+            INSERT INTO user_app_countries (user_id, app_id, country, collected_at)
+            SELECT u.user_id, s.app_id, s.country,
+                   COALESCE(s.collected_at, now()::text)
+            FROM user_apps u
+            JOIN app_country_stats s ON s.app_id = u.app_id
+            ON CONFLICT (user_id, app_id, country) DO NOTHING
+        """)
     logger.info("Multi-country migration applied (idempotent)")
 
 
@@ -592,13 +623,200 @@ def get_user_apps(user_id: str) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def get_reviews(app_id: int, country: str | None = None) -> list[dict]:
+def add_user_app_country(user_id: str, app_id: int, country: str) -> None:
     """
-    Fetch reviews for a given app, optionally scoped to one country.
+    Record that a user has collected an app for a specific country.
+
+    Call this whenever a collection completes for a user, in addition to
+    add_user_app — this is the fine-grained grant that scopes which countries
+    show as available for this app to this specific user (see migrate() step 8).
+
+    Args:
+        user_id: Supabase Auth user UUID.
+        app_id:  iTunes numeric app ID.
+        country: App Store country code.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO user_app_countries (user_id, app_id, country, collected_at) "
+            "VALUES (%s, %s, %s, %s) "
+            "ON CONFLICT (user_id, app_id, country) DO UPDATE SET collected_at = EXCLUDED.collected_at",
+            (user_id, app_id, country, datetime.now().isoformat()),
+        )
+
+
+def user_owns_app_country(user_id: str, app_id: int, country: str) -> bool:
+    """
+    Whether a user has collected a given app for a specific country.
+
+    Stricter than user_owns_app — used to gate country-scoped views (sentiment,
+    rankings, competitors, reviews) so a user can't see a country's data for an
+    app just because they own a *different* country of the same app.
+
+    Args:
+        user_id: Supabase Auth user UUID.
+        app_id:  iTunes numeric app ID.
+        country: App Store country code.
+
+    Returns:
+        True if a user_app_countries row links the three.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT 1 FROM user_app_countries "
+            "WHERE user_id = %s AND app_id = %s AND country = %s LIMIT 1",
+            (user_id, app_id, country),
+        )
+        return cursor.fetchone() is not None
+
+
+def get_user_app_countries(user_id: str, app_id: int) -> list[dict]:
+    """
+    Countries this user has collected for an app, with when each was last run.
+
+    Args:
+        user_id: Supabase Auth user UUID.
+        app_id:  iTunes numeric app ID.
+
+    Returns:
+        List of {country, collected_at} dicts, most recently collected first.
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT country, collected_at FROM user_app_countries "
+            "WHERE user_id = %s AND app_id = %s ORDER BY collected_at DESC",
+            (user_id, app_id),
+        )
+        rows = cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+def delete_app_for_user(user_id: str, app_id: int) -> dict:
+    """
+    Permanently delete a user's collected data for an app, orphan-safe.
+
+    Removes every country this user owns for the app. For each country, the
+    underlying data (reviews, rankings, seeds, this app's own competitor list)
+    is only physically purged if no *other* user still owns that country for
+    this app — so one user deleting an app never breaks it for another user
+    who has also collected it. If no owner remains for the app at all, the
+    apps row itself is purged too (unless it's still referenced as someone
+    else's competitor, in which case just the row's target-app data is gone).
+
+    Args:
+        user_id: Supabase Auth user UUID.
+        app_id:  iTunes numeric app ID.
+
+    Returns:
+        Dict with countries_removed (this user's) and countries_purged (fully
+        deleted because no one else owned them) and app_fully_deleted (bool).
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT country FROM user_app_countries WHERE user_id = %s AND app_id = %s",
+            (user_id, app_id),
+        )
+        owned_countries = [row["country"] for row in cursor.fetchall()]
+
+        cursor.execute(
+            "DELETE FROM user_app_countries WHERE user_id = %s AND app_id = %s",
+            (user_id, app_id),
+        )
+        cursor.execute(
+            "DELETE FROM user_apps WHERE user_id = %s AND app_id = %s",
+            (user_id, app_id),
+        )
+
+        purged_countries = []
+        for country in owned_countries:
+            cursor.execute(
+                "SELECT 1 FROM user_app_countries WHERE app_id = %s AND country = %s LIMIT 1",
+                (app_id, country),
+            )
+            if cursor.fetchone():
+                continue  # another user still owns this country — keep the data
+            cursor.execute(
+                "DELETE FROM reviews WHERE app_id = %s AND country = %s", (app_id, country)
+            )
+            cursor.execute(
+                "DELETE FROM rankings WHERE app_id = %s AND country = %s", (app_id, country)
+            )
+            cursor.execute(
+                "DELETE FROM seed_keywords WHERE app_id = %s AND country = %s",
+                (app_id, country),
+            )
+            cursor.execute(
+                "DELETE FROM competitor_seeds WHERE target_app_id = %s AND country = %s",
+                (app_id, country),
+            )
+            cursor.execute(
+                "DELETE FROM competitors WHERE target_app_id = %s AND country = %s",
+                (app_id, country),
+            )
+            cursor.execute(
+                "DELETE FROM app_country_stats WHERE app_id = %s AND country = %s",
+                (app_id, country),
+            )
+            purged_countries.append(country)
+
+        # If no one owns any country of this app anymore, and it isn't kept
+        # alive as someone else's competitor, remove the app row entirely.
+        app_fully_deleted = False
+        cursor.execute(
+            "SELECT 1 FROM user_app_countries WHERE app_id = %s LIMIT 1", (app_id,)
+        )
+        if not cursor.fetchone():
+            cursor.execute(
+                "SELECT 1 FROM competitors WHERE competitor_app_id = %s LIMIT 1",
+                (app_id,),
+            )
+            if not cursor.fetchone():
+                cursor.execute("DELETE FROM keywords WHERE app_id = %s", (app_id,))
+                cursor.execute(
+                    "DELETE FROM app_country_stats WHERE app_id = %s", (app_id,)
+                )
+                cursor.execute("DELETE FROM apps WHERE app_id = %s", (app_id,))
+                app_fully_deleted = True
+
+    logger.info(
+        f"Deleted app {app_id} for user {user_id}: countries_removed="
+        f"{owned_countries}, countries_purged={purged_countries}, "
+        f"app_fully_deleted={app_fully_deleted}"
+    )
+    return {
+        "countries_removed": owned_countries,
+        "countries_purged": purged_countries,
+        "app_fully_deleted": app_fully_deleted,
+    }
+
+
+def _parse_review_date(value: str | None) -> datetime | None:
+    """Parse a review's ISO date string, tolerating missing/malformed values."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def get_reviews(
+    app_id: int, country: str | None = None, days: int | None = None
+) -> list[dict]:
+    """
+    Fetch reviews for a given app, optionally scoped to one country and to
+    the most recent N days.
 
     Args:
         app_id:  iTunes numeric app ID.
         country: If given, only reviews collected for that App Store country.
+        days:    If given, only reviews dated within the last N days (reviews
+                 with a missing/unparseable date are excluded from the filter).
 
     Returns:
         List of review dicts.
@@ -612,8 +830,14 @@ def get_reviews(app_id: int, country: str | None = None) -> list[dict]:
                 "SELECT * FROM reviews WHERE app_id = %s AND country = %s",
                 (app_id, country),
             )
-        rows = cursor.fetchall()
-    return [dict(row) for row in rows]
+        rows = [dict(row) for row in cursor.fetchall()]
+    if days is None:
+        return rows
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    return [
+        row for row in rows
+        if (parsed := _parse_review_date(row.get("review_date"))) and parsed >= cutoff
+    ]
 
 
 def get_all_rankings(app_id: int, country: str | None = None) -> list[dict]:
@@ -1308,26 +1532,6 @@ def get_competitors_last_discovered(target_app_id: int, country: str) -> str | N
         )
         row = cursor.fetchone()
     return row["last"] if row else None
-
-
-def get_app_countries(app_id: int) -> list[str]:
-    """
-    Return the App Store countries this app has been collected for.
-
-    Args:
-        app_id: iTunes numeric app ID.
-
-    Returns:
-        Sorted list of two-letter country codes (empty if never collected).
-    """
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT country FROM app_country_stats WHERE app_id = %s ORDER BY country",
-            (app_id,),
-        )
-        rows = cursor.fetchall()
-    return [row["country"] for row in rows]
 
 
 def save_app_country_stats(app_dict: dict) -> None:

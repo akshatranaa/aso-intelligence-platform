@@ -97,22 +97,37 @@ def get_current_user(authorization: Optional[str] = Header(default=None)) -> dic
 
 
 def require_app_membership(
-    app_id: int, user: dict = Depends(get_current_user)
+    app_id: int,
+    country: Optional[str] = None,
+    user: dict = Depends(get_current_user),
 ) -> dict:
     """
     Ensure the authenticated user owns (has collected/loaded) the given app.
 
+    When the request carries a country (query param — every country-scoped
+    route also declares its own `country`, and FastAPI binds both from the
+    same value), ownership is checked at the (app, country) level: a user who
+    collected this app for India can't view its US data just because they own
+    the app_id in general. Without a country in the request, the coarser
+    "owns the app at all" check applies.
+
     Args:
-        app_id: iTunes numeric app ID from the path.
-        user:   The authenticated user (injected).
+        app_id:  iTunes numeric app ID from the path.
+        country: App Store country from the query string, if the route has one.
+        user:    The authenticated user (injected).
 
     Returns:
         The authenticated user dict.
 
     Raises:
-        HTTPException: 403 if the app is not one of the user's apps.
+        HTTPException: 403 if the user doesn't own this app (+ country).
     """
-    if not database.user_owns_app(user["id"], app_id):
+    owns = (
+        database.user_owns_app_country(user["id"], app_id, country)
+        if country
+        else database.user_owns_app(user["id"], app_id)
+    )
+    if not owns:
         raise HTTPException(
             status_code=403, detail="You don't have access to this app"
         )

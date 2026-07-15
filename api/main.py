@@ -198,6 +198,11 @@ def _run_collection(
             if reviews_fetch_failed else None
         )
 
+        # Grant country-scoped ownership only on success, so a failed/partial
+        # run doesn't make this country look available in the user's list.
+        if user_id:
+            database.add_user_app_country(user_id, app_id, country)
+
         logger.info(f"Collection complete for {app_data['name']}")
         _jobs[job_id] = {
             "status": "done",
@@ -272,8 +277,9 @@ def list_apps(user: dict = Depends(get_current_user)) -> dict:
     List the collected target apps owned by the authenticated user.
 
     Returns:
-        Dict with a list of {app_id, name, category, countries} entries,
-        sorted by name.
+        Dict with a list of {app_id, name, category, countries} entries sorted
+        by name, where countries is this user's own {country, collected_at}
+        list (never another user's countries for the same app).
     """
     targets = database.get_user_apps(user["id"])
     apps = [
@@ -281,7 +287,7 @@ def list_apps(user: dict = Depends(get_current_user)) -> dict:
             "app_id":    a["app_id"],
             "name":      a["name"],
             "category":  a.get("category"),
-            "countries": database.get_app_countries(a["app_id"]),
+            "countries": database.get_user_app_countries(user["id"], a["app_id"]),
         }
         for a in sorted(targets, key=lambda a: (a.get("name") or "").lower())
     ]
@@ -314,7 +320,11 @@ def search_apps(
 
 
 @app.get("/app/{app_id}", dependencies=[Depends(require_app_membership)])
-def get_app(app_id: int, country: Optional[str] = None) -> dict:
+def get_app(
+    app_id: int,
+    country: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+) -> dict:
     """
     Fetch metadata for one app, optionally with per-country metrics.
 
@@ -322,9 +332,11 @@ def get_app(app_id: int, country: Optional[str] = None) -> dict:
         app_id:  iTunes numeric app ID.
         country: If given, overlay that country's rating count / rating / version
                  / description from the per-country snapshot.
+        user:    The authenticated user (injected).
 
     Returns:
-        App metadata dict, plus a `countries` list of stores it has data for.
+        App metadata dict, plus a `countries` list (scoped to this user) of
+        {country, collected_at} entries it has data for.
     """
     app_data = database.get_app(app_id)
     if not app_data:
@@ -337,65 +349,83 @@ def get_app(app_id: int, country: Optional[str] = None) -> dict:
                 if stats.get(k) is not None:
                     app_data[k] = stats[k]
             app_data["country"] = country
-    app_data["countries"] = database.get_app_countries(app_id)
+    app_data["countries"] = database.get_user_app_countries(user["id"], app_id)
     return app_data
 
 
 @app.get("/app/{app_id}/countries", dependencies=[Depends(require_app_membership)])
-def get_app_countries(app_id: int) -> dict:
+def get_app_countries(app_id: int, user: dict = Depends(get_current_user)) -> dict:
     """
-    List the App Store countries an app has been collected for.
+    List the App Store countries *this user* has collected an app for.
+
+    Scoped per user — another user having collected a different country for
+    the same app never makes that country appear here (see
+    database.user_app_countries).
 
     Args:
         app_id: iTunes numeric app ID.
+        user:   The authenticated user (injected).
 
     Returns:
-        Dict with a sorted list of two-letter country codes.
+        Dict with {country, collected_at} entries, most recent first.
     """
     if not database.get_app(app_id):
         raise HTTPException(status_code=404, detail=f"App {app_id} not found")
-    return {"app_id": app_id, "countries": database.get_app_countries(app_id)}
+    return {
+        "app_id": app_id,
+        "countries": database.get_user_app_countries(user["id"], app_id),
+    }
 
 
 @app.post("/app/{app_id}/untrack", dependencies=[Depends(verify_api_key)])
 def untrack_app(app_id: int, user: dict = Depends(require_app_membership)) -> dict:
     """
-    Remove an app from the user's list without deleting its collected data.
+    Permanently delete this user's collected data for an app.
 
-    Only drops this user's ownership — other users who collected the same app
-    keep it, and the app's collected data is preserved.
+    Removes every country this user owns for the app. Data for a country is
+    only physically purged from the database if no other user still owns it
+    (see database.delete_app_for_user) — one user deleting an app never
+    affects another user who has also collected it.
 
     Args:
         app_id: iTunes numeric app ID.
         user:   The authenticated owner (injected).
 
     Returns:
-        Dict confirming the app is untracked for this user.
+        Dict confirming deletion, with the countries removed/purged and
+        whether the app was purged entirely (no owner left anywhere).
     """
-    database.remove_user_app(user["id"], app_id)
-    return {"app_id": app_id, "untracked": True}
+    result = database.delete_app_for_user(user["id"], app_id)
+    return {"app_id": app_id, "deleted": True, **result}
 
 
 @app.get("/app/{app_id}/reviews", dependencies=[Depends(require_app_membership)])
-def get_reviews(app_id: int, country: Optional[str] = None) -> dict:
+def get_reviews(
+    app_id: int, country: Optional[str] = None, days: Optional[int] = None
+) -> dict:
     """
     Fetch stored reviews for an app, optionally scoped to one country.
 
     Args:
         app_id:  iTunes numeric app ID.
         country: If given, only reviews for that App Store country.
+        days:    If given, only reviews from the last N days. Omitted means
+                 all-time — the frontend's default period (30 days) is applied
+                 by always sending an explicit value, not by this default.
 
     Returns:
         Dict with total count and list of review dicts.
     """
     if not database.get_app(app_id):
         raise HTTPException(status_code=404, detail=f"App {app_id} not found")
-    reviews = database.get_reviews(app_id, country)
+    reviews = database.get_reviews(app_id, country, days=days)
     return {"app_id": app_id, "total": len(reviews), "reviews": reviews}
 
 
 @app.get("/app/{app_id}/sentiment", dependencies=[Depends(require_app_membership)])
-def get_sentiment(app_id: int, country: Optional[str] = None) -> dict:
+def get_sentiment(
+    app_id: int, country: Optional[str] = None, days: Optional[int] = None
+) -> dict:
     """
     Fetch pre-computed sentiment summary for an app, optionally per country.
 
@@ -404,17 +434,21 @@ def get_sentiment(app_id: int, country: Optional[str] = None) -> dict:
     Args:
         app_id:  iTunes numeric app ID.
         country: If given, only reviews for that App Store country.
+        days:    If given, only reviews from the last N days. Omitted means
+                 all-time — the frontend's default period (30 days) is applied
+                 by always sending an explicit value, not by this default.
 
     Returns:
         Sentiment summary with counts, percentages, and average rating.
     """
     if not database.get_app(app_id):
         raise HTTPException(status_code=404, detail=f"App {app_id} not found")
-    summary = sentiment.get_sentiment_summary(app_id, country)
+    summary = sentiment.get_sentiment_summary(app_id, country, days=days)
     if not summary:
         raise HTTPException(
             status_code=404,
-            detail="No sentiment data found — run /collect first",
+            detail="No sentiment data found in this period — run /collect "
+                   "first, or try a longer time range.",
         )
     return summary
 

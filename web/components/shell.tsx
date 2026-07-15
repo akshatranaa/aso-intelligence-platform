@@ -134,15 +134,13 @@ export function Topbar() {
   const apps = data?.apps ?? [];
   const activeApp = apps.find((a) => a.app_id === appId);
 
-  // Countries offered = the ones the active app actually has data for.
-  const appCountries = activeApp?.countries ?? [];
+  // Countries offered = the ones *this user* collected the active app for.
+  const appCountries = (activeApp?.countries ?? []).map((c) => c.country);
 
   function navigate(nextAppId: number, nextCountry?: string) {
     const app = apps.find((a) => a.app_id === nextAppId);
-    const c =
-      nextCountry && app?.countries.includes(nextCountry)
-        ? nextCountry
-        : app?.countries[0];
+    const codes = (app?.countries ?? []).map((c) => c.country);
+    const c = nextCountry && codes.includes(nextCountry) ? nextCountry : codes[0];
     // Keep the current section when switching app/country, else overview.
     const section =
       NAV.find((n) => pathname.includes(`/${n.slug}`))?.slug ?? "overview";

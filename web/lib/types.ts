@@ -1,10 +1,16 @@
 /** Shapes returned by the FastAPI backend (see api/main.py). */
 
+/** A country this specific user has collected an app for, and when. */
+export interface AppCountry {
+  country: string;
+  collected_at: string;
+}
+
 export interface AppSummary {
   app_id: number;
   name: string;
   category: string | null;
-  countries: string[];
+  countries: AppCountry[];
 }
 
 export interface AppSearchResult {
@@ -27,7 +33,7 @@ export interface AppDetail {
   min_os_version: string | null;
   version: string | null;
   country: string | null;
-  countries: string[];
+  countries: AppCountry[];
 }
 
 export interface SentimentSummary {

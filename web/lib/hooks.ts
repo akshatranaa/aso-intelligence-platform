@@ -31,20 +31,37 @@ export function useApp(appId: number | null, country?: string) {
   });
 }
 
-export function useSentiment(appId: number | null, country?: string) {
+/** days: undefined/null = all time. */
+export function useSentiment(
+  appId: number | null,
+  country?: string,
+  days?: number | null
+) {
   return useQuery({
-    queryKey: ["sentiment", appId, country],
-    queryFn: () => apiGet<SentimentSummary>(`/app/${appId}/sentiment`, { country }),
+    queryKey: ["sentiment", appId, country, days],
+    queryFn: () =>
+      apiGet<SentimentSummary>(`/app/${appId}/sentiment`, {
+        country,
+        days: days ?? undefined,
+      }),
     enabled: appId != null,
     retry: false, // 404 just means "no data yet"
   });
 }
 
-export function useReviews(appId: number | null, country?: string) {
+/** days: undefined/null = all time. */
+export function useReviews(
+  appId: number | null,
+  country?: string,
+  days?: number | null
+) {
   return useQuery({
-    queryKey: ["reviews", appId, country],
+    queryKey: ["reviews", appId, country, days],
     queryFn: () =>
-      apiGet<{ total: number; reviews: Review[] }>(`/app/${appId}/reviews`, { country }),
+      apiGet<{ total: number; reviews: Review[] }>(`/app/${appId}/reviews`, {
+        country,
+        days: days ?? undefined,
+      }),
     enabled: appId != null,
   });
 }
